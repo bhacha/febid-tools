@@ -1,0 +1,6 @@
+[submodule "f3ast"]
+	path = f3ast
+	url = https://github.com/bhacha/f3ast.git
+[submodule "trimesh"]
+	path = trimesh
+	url = https://github.com/bhacha/trimesh.git
