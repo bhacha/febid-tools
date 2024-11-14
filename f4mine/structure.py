@@ -19,8 +19,10 @@ def binarize(array, threshold):
     return binary_array
 
 def calculate_neighbors(binary_array):
+    ##Only calculate those adjacent and below the pixel
     arr_size = binary_array.shape
     neighbor_kernel = np.ones((5,5,5))
+    neighbor_kernel[:, :, :2] = 0
     neighbor_kernel[2,2,2] = 0
     
     
@@ -33,7 +35,6 @@ def harmonic(f):
     f = round(f)
     if f>0:
         invres = ((np.log(f) + .5772156649) + 1/(2*f)) #Euler-Mascheroni
-        
         
         
     else:
