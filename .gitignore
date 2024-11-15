@@ -162,3 +162,7 @@ cython_debug/
 #.idea/
 Test3DEpsilonArray.npy
 Gyroid-30pFill-350nmUnitCell-4x4x4.stl
+teststream1-inverse.str
+teststream1.str
+teststream2-longer.str
+teststream2.str
