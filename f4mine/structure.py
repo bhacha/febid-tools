@@ -52,14 +52,14 @@ def calculate_regions_in_slices(binary_array):
         area_labels :
             areas of each of the labelled regions, index^2 units 
 
-
-
-
     """
 
     nonzero_indices = []
-    full_labels = []
-    area_labels = []
+
+    ## initialize numpy arrays to store our things.
+    area_array = np.zeros_like(binary_array, dtype=np.float64)
+    full_labels = np.zeros_like(binary_array, dtype=np.float64)
+
     for i in range(binary_array.shape[-1]):
         """
         Going slice by slice, label connected regions and calculate their area
@@ -71,31 +71,38 @@ def calculate_regions_in_slices(binary_array):
         """
         slice = binary_array[...,i]
         
-
         slice_labels = sm.label(slice)
         regions = sm.regionprops(slice_labels)
         """
         Create a list of the areas of the labelled regions in each slice, then make a list of those lists to get a list for all the slices.
-        
         """
+
         slice_areas = []
         for n in regions:
             slice_areas.append(n.area)
         
+
         # put a padding zero at the front, as mentioned above
         slice_areas.insert(0, 0)
+        slice_areas = np.asarray(slice_areas)
 
         ### Append to the whole-structure lists
-    
-        area_labels.append(slice_areas)
-        full_labels.append(slice_labels)
+        full_labels[:,:,i] = np.asarray(slice_labels)
+        
+        area_array[:,:,i] = slice_areas[slice_labels]
         """
         I want the indices in the original matrix that are labelled. This corresponds to the indices of the elements that are connected in the original matrix. 
         """
         nonzero_indices.append(np.nonzero(slice_labels))
 
 
-    return full_labels, nonzero_indices, area_labels
+    
+
+
+        ### Convert lists to numpy arrays
+        
+
+    return full_labels, nonzero_indices, area_array
 
 def get_points(binary_array):
     full_labels, nonzero_indices, area_labels = calculate_regions_in_slices(binary_array)
@@ -156,12 +163,7 @@ if __name__ == "__main__":
     
     labels, indices, areas = calculate_regions_in_slices(binary_array)
 
-
-    label_slice = labels[0]
-    area_slice = np.asarray(areas[0])
-
-    area = area_slice[label_slice]
-    print
+    print(labels)
 
 
 
