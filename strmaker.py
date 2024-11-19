@@ -68,10 +68,10 @@ def output_stream(filename, xpos, ypos, dwell_time):
                 f.write(linestring + '\n')
             else:
                 f.write(linestring + " "+"0")
-
-class SEM():
+     
+class Streams():
     """
-    Store the settings for the SEM for use in later work.
+    Holds the important stream information (dwells, x, y, etc.)
     
     Attributes
     -----------
@@ -87,13 +87,13 @@ class SEM():
     field_center : ndarray
         Center of the fabricatable region, in pixels
         
-    
-    """
+
+    """   
     def __init__(
         self,
         addressable_pixels,
         screen_width
-    ):
+        ):
         """
         Parameters
         -----------
@@ -105,35 +105,11 @@ class SEM():
             Horizontal field of view, in nanometers
             
         """
-        
+
         self.pixels = np.asarray(addressable_pixels)
         self.width = screen_width
         self.pixel_size = screen_width/self.pixels[0] 
         self.field_center = [self.pixels[0]/2, self.pixels[1]/2]
-
-class Streams():
-    """
-    Holds the important stream information (dwells, x, y, etc.)
-    
-    Attributes
-    -----------
-    array : ndarray
-        structure to make
-    
-    structure_size_nm : float
-        structure size in nanometers. Assumes square.
-     
-
-    """   
-    def __init__(
-        self,
-        SEM,
-    ):
-        self.pixels = SEM.pixels
-        self.width = SEM.width
-        self.pixel_size = SEM.pixel_size
-        self.field_center = SEM.field_center
-
     
     def array_to_stream(self, array, structure_size_nm, **kwargs):
         """
