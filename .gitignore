@@ -162,12 +162,8 @@ cython_debug/
 #.idea/
 Test3DEpsilonArray.npy
 Gyroid-30pFill-350nmUnitCell-4x4x4.stl
-resources/240628_TT1_alltempies1_75%_30tilt.tif
-resources/240628_TT1_alltempies1_75%_flat.tif
-resources/240628_TT1_branchtrios1_1x_75%_flat.tif
-resources/240628_TT1_branchtrios1_2x_75%_flat.tif
-resources/branchtrio (1).ipt
-resources/branchtrio-SizedUp.3mf
-resources/branchtrio-SizedUp.ipt
-resources/branchtrio.ipt
-resources/branchtrio.stl
+teststream1-inverse.str
+teststream1.str
+teststream2-longer.str
+teststream2.str
+CoilBlockOnBottom.stl

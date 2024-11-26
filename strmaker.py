@@ -10,10 +10,6 @@ import skimage.morphology as morph
 import skimage.filters as filt
 import skimage.transform as skt
 
-#%%
-
-# dwell_time = 32000
-
 
 
 def process_array(array, **kwargs):
@@ -72,10 +68,10 @@ def output_stream(filename, xpos, ypos, dwell_time):
                 f.write(linestring + '\n')
             else:
                 f.write(linestring + " "+"0")
-
-class SEM():
+     
+class Streams():
     """
-    Store the settings for the SEM for use in later work.
+    Holds the important stream information (dwells, x, y, etc.)
     
     Attributes
     -----------
@@ -91,13 +87,13 @@ class SEM():
     field_center : ndarray
         Center of the fabricatable region, in pixels
         
-    
-    """
+
+    """   
     def __init__(
         self,
         addressable_pixels,
         screen_width
-    ):
+        ):
         """
         Parameters
         -----------
@@ -109,35 +105,11 @@ class SEM():
             Horizontal field of view, in nanometers
             
         """
-        
+
         self.pixels = np.asarray(addressable_pixels)
         self.width = screen_width
         self.pixel_size = screen_width/self.pixels[0] 
         self.field_center = [self.pixels[0]/2, self.pixels[1]/2]
-
-class Streams():
-    """
-    Holds the important stream information (dwells, x, y, etc.)
-    
-    Attributes
-    -----------
-    array : ndarray
-        structure to make
-    
-    structure_size_nm : float
-        structure size in nanometers. Assumes square.
-     
-
-    """   
-    def __init__(
-        self,
-        SEM,
-    ):
-        self.pixels = SEM.pixels
-        self.width = SEM.width
-        self.pixel_size = SEM.pixel_size
-        self.field_center = SEM.field_center
-
     
     def array_to_stream(self, array, structure_size_nm, **kwargs):
         """
@@ -152,17 +124,19 @@ class Streams():
             desired size of structure in nanometers
         
         """
+        
+        dwell_time_orig = 20000
 
         array = process_array(array, **kwargs)
         
-        image_size = array.shape[:1]
+        image_size = array.shape[:2]
         
         ### convert from nm to px size
         structure_size = structure_size_nm/self.pixel_size
         
         
-        structure_xspan = [int(self.field_center[0] - structure_size/2), int(self.field_center[0] + self.structure_size/2)]
-        structure_yspan = [int(self.field_center[1] - structure_size/2), int(self.field_center[1] + self.structure_size/2)]
+        structure_xspan = [int(self.field_center[0] - structure_size/2), int(self.field_center[0] + structure_size/2)]
+        structure_yspan = [int(self.field_center[1] - structure_size/2), int(self.field_center[1] + structure_size/2)]
 
         '''I use range in the next step because linspace gives integers and I don't want to worry about rounding methods causing  distortion. The tradeoff is that I need to calculate the step size instead of the number of steps. This will get rounded, but then apply the same step size to everything. I think this would reduce distortion since values won't round away from one another.
         '''
@@ -176,19 +150,21 @@ class Streams():
         dwells = []
         xposs = []
         yposs = []
-
+        k = array.shape[2]
         for slice in array:
+            k += 1
             for x in range(slice.shape[0]):
                 xpos = point_xrange[x]
                 for y in range(slice.shape[1]):
                     ypos = point_yrange[y]
                     if slice[x, y] != 0:
-                        dwell_time = dwell_time
+                        dwell_time = round(dwell_time_orig / (np.exp(-(.45*k/(array.shape[2])))))
                         dwells.append(dwell_time)
                         xposs.append(xpos)
                         yposs.append(ypos)
                     else:
                         pass
+        
                               
         return dwells, xposs, yposs
 
@@ -198,7 +174,7 @@ class Streams():
 
 structure_size_nm = 1000 #nm
 
-npyfile = "SRSNetwork-r0.002.npy"
+npyfile = "Test3DEpsilonArray.npy"
 test_array = np.load(npyfile)
 print(test_array.shape)
 # test_array = test_array[:,:,:40]
@@ -209,12 +185,14 @@ screen_width = 10.2e3
         
 scope = SEM(addressable_pixels, screen_width)
 
-out1 = scope.array_to_stream(test_array, structure_size_nm)
-        
-        
-        
-# out = process_array(test_array, Threshold=11, MaxIters=8)
+streams = Streams(scope)
 
-# plt.imshow(out[:,:,10], cmap='binary_r')
+out1 = streams.array_to_stream(test_array, structure_size_nm, Threshold = 10)
+        
+output = output_stream("teststream2-longer", out1[1], out1[2], out1[0])
+        
+out = process_array(test_array, Threshold=10, MaxIters=8)
+
+plt.imshow(out[:,:,10], cmap='binary_r')
 # print(out[100,0,10])
 # %%
