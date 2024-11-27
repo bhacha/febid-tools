@@ -18,10 +18,11 @@ class Structure:
                  **kwargs):
         
         self.growth_rate = 50e-3
-        self.k = 1.25
+        self.k = 1.2
         self.sigma = 4
-        self.rho = 10
-        
+        self.rho = 1
+        self.layer_height = 125
+
         self.structure_size_nm = structure_size_nm
         self.threshold = kwargs.get("threshold", None)
         self.pitch = kwargs.get("pitch", None)
@@ -236,7 +237,7 @@ class Structure:
    
     ### Resistance calculations
     
-    def calculate_resistance(self, layer_height=1):
+    def calculate_resistance(self):
         
         """
         calculate the total structure resistance. Begin with calculating the resistance of each slice, then determine whethere these add in series or parallel based on the number of regions in the adjacent slices. If the number of regions changes in adjacent layers, that implies that something has merged or separated and thus the resistance should be calculated in parallel.
@@ -251,26 +252,24 @@ class Structure:
         
         """
         
-        self.layer_height = layer_height
+        ### split arrays into euler-equivalent stacks, then find the regions where the euler number changes. 
+        _, unique_region_indices = self.euler_resistance_subregions()
         
-        ### split arrays into euler-equivalent stacks. 
-        split_arrays = self.euler_resistance_subregions()
-        number_of_regions = len(split_arrays)
-        
-        #This will be a list of numpy arrays, with each one having its resistance added in series
-        region_resistances = []
-        
-        for layer_region_number in range(number_of_regions):
-            ## resistances of each layer, in each region. This is a list of arrays (layers)
-            layer_resistances_in_region = split_arrays[layer_region_number]
-            
-            if layer_region_number == 0:
-                summed_resistances_in_region = self.calculate_series_resistance(layer_resistances_in_region)
+        layer_resistances = self.calculate_layer_resistance()
+
+        for layer_number in range(layer_resistances.shape[2]):
+            layer = layer_resistances[:,:,layer_number]
+            if layer_number == 0:
+                previous_layer = np.zeros_like(layer)
             else:
-                self.calculate_parallel_resistance(layer_resistances_in_region)
-        
-        # ### calculate the parallel resistance between adjacent euler-regions. This function updates the object's total_resistances array
-        # self.calculate_parallel_resistance(region_resistances)
+                previous_layer = self.total_resistances[:,:, layer_number-1]
+
+            #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens so it won't get the advantage of the different conduction regions. 
+            if layer_number not in unique_region_indices[1:]:
+                self.total_resistances[:,:,layer_number] = layer + (previous_layer)
+            else:
+                self.calculate_parallel_resistance(layer, layer_number)
+            
         
         return self.total_resistances
         
@@ -282,7 +281,7 @@ class Structure:
         euler_arr = np.asarray(self.euler_numbers)
         unique_euler_layers = np.where(euler_arr[:-1] != euler_arr[1:])[0]
         split_arr = np.split(layer_resistances, unique_euler_layers, axis=2)
-        return split_arr   
+        return split_arr, unique_euler_layers
 
     def calculate_layer_resistance(self):
         """
@@ -342,42 +341,22 @@ class Structure:
                         
         return summed_resistances_in_region
 
-    def calculate_parallel_resistance(self, region_resistances):
+    def calculate_parallel_resistance(self, resistance_layer, layer_index):
         """
         calculate the thermal resistance, assuming the regions add in parallel. This will involve reciprocally summing the resistances of the regions that are connected in series.
         """
         number_of_paths = np.abs(self.euler_numbers)
-        
-        ## the bottom region will always be in series, since it's by definition the connection to the substrate
-        region0_height = region_resistances[0].shape[2]
-        self.total_resistances[:,:,:region0_height] = region_resistances[0][:,:,:]
-                
-        for region in range(1, len(region_resistances)):
-            layer_offset = region_resistances[0].shape[2] ### Since we already calculated the resistances of the first region
-            
-            previous_paths = number_of_paths[layer_offset] # get previous Euler number
-            current_paths = number_of_paths[layer_offset+1] # current Euler number
-            path_difference = np.abs(current_paths - previous_paths)+1 ### get the difference in paths
-            
-            
-            layer_resistances_in_region = region_resistances[region]
-            
-            previous_region_resistances = region_resistances[region-1][:,:,-1] # we fabricate on top of the last layer, so its resistance is the part that factors into the parallel calculation 
-            
-            for layer in range(layer_resistances_in_region.shape[2]):
-                
-                resistance = layer_resistances_in_region[:,:,layer]
-                
-                #we only need to do parallel calculation at the interface. Then it can be treated as serial until the next interface
-                if layer == 0:
-                    self.total_resistances[:,:, layer_offset+layer] = resistance + np.divide(path_difference,previous_region_resistances, out=np.zeros_like(resistance, dtype=np.float64),
-                    where=previous_region_resistances!=0)
-                    
-                else:
-                    self.total_resistances[:,:, layer_offset+layer] = resistance + self.total_resistances[:,:,layer_offset+layer-1]
-                
-                 
-            layer_offset += region_resistances[region].shape[2]
+
+        previous_paths = number_of_paths[layer_index-1] # get previous Euler number
+        current_paths = number_of_paths[layer_index] # current Euler number
+        path_difference = np.abs(current_paths - previous_paths)+1 ### get the difference in paths
+
+
+        resistance = resistance_layer
+        self.total_resistances[:,:, layer_index] = resistance + np.divide(path_difference,self.total_resistances[:,:,layer_index-1], out=np.zeros_like(resistance, dtype=np.float64),
+        where=self.total_resistances[:,:,layer_index-1]!=0)
+
+
 
     ### Sizing calculations
     def calculate_index_size(self, output_nm = False):
@@ -477,13 +456,13 @@ class Structure:
         return dwell_time
 
 
-    def output_stream(self, filename):
+    def output_stream(self, filename, sample_factor=1):
         coord_arr, dwells = self.calculate_dwells(self.structure_size_nm)
-        numpoints = str(coord_arr.shape[0])
+        numpoints = str(coord_arr.shape[0]/sample_factor)
         with open(filename+'.str', 'w') as f:
             f.write('s16\n1\n')
             f.write(numpoints+'\n')
-            for k in range(int(numpoints)):
+            for k in range(0,int(numpoints), sample_factor):
                 xstring = str(coord_arr[k, 0])
                 ystring = str(coord_arr[k, 1])
                 dwellstring = str(round(dwells[k]))
@@ -518,14 +497,19 @@ if __name__ == "__main__":
 
 
 
-    structure = Structure(file, sem_settings, pitch=100, structure_size_nm=1000)
-    structure.calculate_resistance(layer_height=1)
-    
+    structure = Structure(file, sem_settings, pitch=50, structure_size_nm=1000)
+    structure.calculate_resistance()
+    #%%
     plt.imshow(structure.total_resistances[50,:,:], origin='lower')
     plt.colorbar()
-    
- 
 
+
+    plt.figure()
+    plt.imshow(structure.total_resistances[:,:,320], origin='lower')
+    plt.colorbar()
+    
+
+    structure.output_stream("testfilename")
  
     # plt.imshow(structure.total_resistances[:,:,30], origin='lower')
     # plt.colorbar()
@@ -607,3 +591,4 @@ if __name__ == "__main__":
 
 
     # plt.show()
+# %%
