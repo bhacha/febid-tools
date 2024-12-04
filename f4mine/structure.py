@@ -6,9 +6,6 @@ import scipy.signal as sps
 import trimesh as tm
 import trimesh.voxel as tv
 
-np.set_printoptions(threshold=np.inf)
-
-
 class Structure:
 
     def __init__(self,
@@ -37,7 +34,7 @@ class Structure:
         self.threshold = kwargs.get("threshold", None)
         self.pitch = kwargs.get("pitch", None)
         
-        self.growth_rate = .025
+        self.growth_rate = .25
         self.k = 2.5
         self.sigma = 4
         self.rho = 20
@@ -45,9 +42,9 @@ class Structure:
 
         ### file loading
         if filepath.endswith(".stl"):
-            self.binary_array = self.import_stl(filepath, self.pitch)
+            self.binary_array = self.import_stl(filepath, self.pitch).astype(int)
         elif filepath.endswith(".npy"):
-            self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True)
+            self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
             
 
         ### sizing
@@ -69,7 +66,6 @@ class Structure:
         ### initialize resistance matrix
         self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64) 
         
-
     @property
     def shape(self):
         shape=self.binary_array.shape
@@ -94,6 +90,7 @@ class Structure:
         
         """
         stl_struct = tm.load_mesh(filepath)
+        stl_struct.apply_scale(10)
         struc_mat = stl_struct.voxelized(pitch=pitch).fill()
         nummat = np.asanyarray(struc_mat.matrix)
         return nummat
@@ -130,7 +127,7 @@ class Structure:
             array = epsilon_array
         return array
 
-    def get_points(self):
+    def DEPRECATED_get_points(self):
  
         """
         This converts the array into points with (x,y,z) values in index units. 
@@ -343,7 +340,6 @@ class Structure:
         point_yrange = range(structure_pix_yspan[0], structure_pix_yspan[1], int(step_size_y))
         
         
-        
 
     ### Resistance calculations
     
@@ -411,7 +407,6 @@ class Structure:
         #calculate resistances for the single layer. Assume layer_height is constant.
         rho = self.rho
         resistance_constant = rho*self.layer_height
-        print(resistance_constant)
         for layer_number in range((self.binary_array.shape[-1])):
 
             ### create an array where coordinates are the resistances in the layer. np divide is to do rho*dL/Area
@@ -505,7 +500,7 @@ class Structure:
             
             for [x, y] in fab_indices:
                 dwell_time = self.dwell_model(resistance_array[x,y,layer], layer, max_layer)
-                if dwell_time <= 3e5:
+                if dwell_time <= 4e4:
                     xpos = point_xrange[x]
                     ypos = point_yrange[y]
                     coordinate = [xpos, ypos]
@@ -569,14 +564,18 @@ if __name__ == "__main__":
                         )
 
 
-    file = "branchtrio-SizedUp.stl"
+    file = "f4mine/TripleBendStructure.stl"
 
+    mesh = tm.load_mesh(file)
+ 
+    structure = Structure(file, sem_settings, pitch=1, structure_size_nm=[500, 500, 500])
 
-
-    structure = Structure(file, sem_settings, pitch=75, structure_size_nm=[1000, 1000, 1000])
+    print(structure.binary_array)
     structure.calculate_resistance()
 
-    structure.output_stream('testfile.str', sample_factor=2)
+
+
+    # structure.output_stream('testfile-2', sample_factor=1)
     
     # fig = plt.figure()
     # ax = fig.add_subplot(projection='3d')
@@ -584,16 +583,19 @@ if __name__ == "__main__":
     # ax.invert_xaxis()
     
     #%%
-    # plt.imshow(structure.total_resistances[40,:,:50], origin='lower', vmax=1)
+    # plt.imshow(structure.total_resistances[40,:,:], origin='lower')
+    # plt.colorbar()
+
+    # plt.imshow(structure.total_resistances[:,10,:], origin='lower')
     # plt.colorbar()
 
 
     # plt.figure()
-    # plt.imshow(structure.total_resistances[:,:,100], origin='lower')
+    # plt.imshow(structure.total_resistances[:,:,10], origin='lower')
     # plt.colorbar()
 
     # plt.figure()
-    # plt.imshow(structure.total_resistances[:,:,30], origin='lower')
+    # plt.imshow(structure.total_resistances[:,:,0], origin='lower')
     # plt.colorbar()
    
  

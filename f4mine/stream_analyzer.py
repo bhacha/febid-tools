@@ -221,7 +221,12 @@ class Stream:
         xpos = stream_array[:, 1]
         ypos = stream_array [:, 2]
         numpoints = str(len(xpos))
-        with open(outfile, 'w') as f:
+        self.write_stream(outfile, numpoints, dwell_times, xpos, ypos)
+
+    def write_stream(self, output_file, numpoints, dwell_times, xpos, ypos):
+         numpoints = str(numpoints)
+
+         with open(output_file, 'w') as f:
             f.write('s16\n1\n')
             f.write(numpoints+'\n')
             for k in range(int(numpoints)):
@@ -232,19 +237,58 @@ class Stream:
                 if k < int(numpoints)-1:
                     f.write(linestring + '\n')
                 else:
-                    f.write(linestring + " "+"0")
+                    f.write(linestring + " "+"0")   
             
-            
+    def dither_stream(self, rad, sigma, dwell_time_max_ms = 3.5):
+        "Taking the centroids and dwells, space them out a little bit into multiple points so that the dwells are shorter. This uses the sigma from the gaussian spot to keep points in the same general neighborhood from the fab perspective."
+        
+        condensed_output = self.condense_points(30, 3000, calculate_new_time=False)
+        stream_array = condensed_output
+        dwell_time_max = dwell_time_max_ms * 1e-3 * 1e7 
+        dwell_times = stream_array[:,0]
+        xpos = stream_array[:, 1]
+        ypos = stream_array [:, 2]
+
+        out_xpos = []
+        out_ypos = []
+        out_dwells = []
+        total_dwell = 0
+        for number, _ in enumerate(xpos):
+            x = xpos[number]
+            y = ypos[number]
+            mean = (x,y)
+            cov = [[rad**2/(sigma**2),0], [0, rad**2/(sigma**2)]]
+            number_dwells = int(dwell_times[number]/dwell_time_max)
+            distributed_points = np.random.multivariate_normal(mean, cov=cov, size=(number_dwells)).astype(int)
+            for points in distributed_points:
+                distance = np.linalg.norm(points-np.array((x, y)))
+                new_dwell = int(np.exp(-(distance**2) / (2*sigma**2))*(dwell_times[number]/number_dwells))
+                if new_dwell > 10 :
+                    out_xpos.append(points[0])
+                    out_ypos.append(points[1])
+                    out_dwells.append(new_dwell)
+                    total_dwell += new_dwell
+                else:
+                    pass
+
+        numpoints = len(out_xpos)
+        outfile = "dithered-newgyr-r30.str"
+        self.write_stream(numpoints=numpoints, dwell_times=out_dwells, xpos=out_xpos, ypos=out_ypos, output_file=outfile)
+
+        print(f"The total time of the dithered points is {total_dwell/1e7:.2f} seconds")  
+    
         
 
 if __name__ == "__main__":
     
-    infile = "ThreeLeg45Deg-GR225-64p6s.str"
+    infile = "RescaledGyroid-4x4x4-v2_200gr_125k_4sig_p3.str"
     stream = load_stream(infile)
     
     
     stream.calculate_total_time()
+
+    stream.dither_stream(rad = 10, sigma = 3)
     
-    outfile = "ThreeLeg45Deg-GR225-Condensed.str"
-    stream.output_stream(outfile, type='condensed', detailed_name = True, index_range = 400, radius=30)
+    # outfile = "ThreeLeg45Deg-GR225-Condensed.str"
+    # stream.output_stream(outfile, type='condensed', detailed_name = True, index_range = 400, radius=30)
     
