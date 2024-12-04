@@ -17,28 +17,56 @@ class Structure:
                  structure_size_nm,
                  **kwargs):
         
-        self.growth_rate = 50e-3
-        self.k = 1.2
-        self.sigma = 4
-        self.rho = 1
-        self.layer_height = 125
-
-        self.structure_size_nm = structure_size_nm
+        """
+        
+        Parameters
+        -------------
+        
+        filepath : str
+            numpy array or stl
+            
+        SEM_settings : SEM
+            SEM object to get settings from
+            
+        structure_size_nm : list [X, Y, Z] or float
+            if list/array, X Y and Z are defined directly. If float, then the structure is assumed to be a cube.
+        """
+                
+        self.SEM_settings = SEM_settings
+        
         self.threshold = kwargs.get("threshold", None)
         self.pitch = kwargs.get("pitch", None)
         
-        self.SEM_settings = SEM_settings
+        self.growth_rate = .025
+        self.k = 2.5
+        self.sigma = 4
+        self.rho = 20
         
+
+        ### file loading
         if filepath.endswith(".stl"):
             self.binary_array = self.import_stl(filepath, self.pitch)
-            
         elif filepath.endswith(".npy"):
             self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True)
             
+
+        ### sizing
+        try:
+            if len(structure_size_nm) == 3:
+                self.structure_size_nm = structure_size_nm
+            else:
+                self.structure_size_nm = [structure_size_nm, structure_size_nm, structure_size_nm]
+        except TypeError:
+            self.structure_size_nm = [structure_size_nm, structure_size_nm, structure_size_nm]
+
+        ### generate list of points, and define the layer_height
+        self.get_coordinates()
+
         
+        ### sectioning
         self.labelled_regions, self.centers, self.areas, self.bounding_boxes, self.euler_numbers = self.calculate_regions_in_slices(return_bounds=True)
         
-        
+        ### initialize resistance matrix
         self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64) 
         
 
@@ -46,9 +74,6 @@ class Structure:
     def shape(self):
         shape=self.binary_array.shape
         return shape        
-
-
-
 
     def import_stl(self, filepath, pitch):
         """
@@ -124,9 +149,25 @@ class Structure:
 
         #unfortunately the tuple is in order (Z, X, Y) for some reason????
         return points
+    
+    def get_coordinates(self):
+        """
+        Convert to x,y,z based on desired size and layer_height
+        """
+        ## calculate desired size per step. nm/array_pixel
+        x_step_size = self.structure_size_nm[0] / self.binary_array.shape[0]
+        y_step_size = self.structure_size_nm[1] / self.binary_array.shape[1] 
+        z_step_size = self.structure_size_nm[2] / self.binary_array.shape[2] 
+        
+        self.layer_height = z_step_size    
+        
+        array_fab_points = np.argwhere(self.binary_array)
+        
+        nm_fab_points = array_fab_points * np.array([x_step_size, y_step_size, z_step_size])
+        
+        return nm_fab_points
 
-
-    ### Sectioning/Regions
+    ### Sectioning/Regions and sizing
     def calculate_regions_in_slices(self, return_bounds=False):
         """
         Returns the array with the same shape as binary_array but with nonzero elements for regions that are connected in the layer.
@@ -233,8 +274,77 @@ class Structure:
         elif return_bounds == True:
             return full_labels, centroid_list, area_array, bounds_list, euler_numbers
 
-   
-   
+
+    ### Sizing stuff is TBD, not sure which values are best to have.
+    def calculate_index_size(self, output_nm = False):
+        """
+        returns the actual size (in pixels) of each index unit in an array, based on the desired fabrication size
+
+
+        Parameters
+        -----------
+            binary_array :
+                array
+                
+            structure_size_nm : 
+                desired structure size (scale)
+                
+            output_nm : bool
+                if True, outputs the pitch in nanometers. Default is false, so output is in SEM pixel units (used by the stream file)
+
+        Returns
+        -----------
+            array_pitch : 
+                size of each index step in an array, in SEM pixel units. Multiply index positions by this number to get pixel coordinates
+        
+        """
+        SEM = self.SEM_settings
+        
+        ##get pixel size
+        self.pix_size = SEM.pixel_size
+
+        ## convert nm structure size to pixels
+        self.structure_size = self.structure_size_nm[0]/self.pix_size
+
+        ### Right now, assume the pixels are square. This is probably something that can be fixed later though.
+        array_pitch = self.structure_size / np.max(self.binary_array.shape[:1])
+        
+        if output_nm == True:
+            array_pitch = self.structure_size_nm[0]/ np.max(self.binary_array.shape[:1])
+        
+        return array_pitch
+
+    def calculate_structure_size(self, units='pixels'):
+        SEM = self.SEM_settings
+        ##get pixel size, in nm
+        self.pix_size = SEM.pixel_size
+        
+        if units == 'pixels':
+            self.calculate_structure_size_pix()
+        elif units == 'nm':
+            self.calculate_structure_size_nm()
+        
+    def calculate_structure_size_nm(self):
+        pass
+
+    def calculate_structure_size_pix(self):       
+        ## convert nm structure size to pixels
+        structure_size = self.structure_size_nm[0]/self.pix_size
+        
+        structure_pix_xspan = [int(SEM.field_center[0] - structure_size/2), int(SEM.field_center[0] + structure_size/2)]
+        structure_pix_yspan = [int(SEM.field_center[1] - structure_size/2), int(SEM.field_center[1] + structure_size/2)]
+
+        '''I use range in the next step because linspace gives floats and I don't want to worry about rounding methods causing  distortion. The tradeoff is that I need to calculate the step size instead of the number of steps. This will get rounded, but then apply the same step size to everything. I think this would reduce distortion since values won't round away from one another.
+        '''
+        step_size_x = structure_size/self.shape[0]
+        step_size_y = structure_size/self.shape[1]
+        
+        point_xrange = range(structure_pix_xspan[0], structure_pix_xspan[1], int(step_size_x))
+        point_yrange = range(structure_pix_yspan[0], structure_pix_yspan[1], int(step_size_y))
+        
+        
+        
+
     ### Resistance calculations
     
     def calculate_resistance(self):
@@ -293,18 +403,16 @@ class Structure:
 
         The rho will be a fudge factor, but the area is calculated already and the length will come from the inter-slice proximity.
 
-        Basically, for each region, get the area and figure out if any regions are in the stack below it. If so, add the resistance at that point (going from slice to slice, the resistance is proportional to the length so it is simply additive. No reciprocal needed)
-        
-        connectivity and parallel resistance should come into this at some point. But alas.
+        Basically, for each region, get the area and figure out if any regions are in the stack below it. If so, add the resistance at that point (going from slice to slice, the resistance is proportional to the length so it is simply additive. No reciprocal needed). connectivity and parallel resistance should come into this at some point. But alas.
         """
         
         layer_resistances = np.zeros_like(self.binary_array, dtype=np.float64)
 
+        #calculate resistances for the single layer. Assume layer_height is constant.
+        rho = self.rho
+        resistance_constant = rho*self.layer_height
+        print(resistance_constant)
         for layer_number in range((self.binary_array.shape[-1])):
-
-            #calculate resistances for the single layer. Assume layer_height is constant.
-            rho = self.rho
-            resistance_constant = rho*self.layer_height
 
             ### create an array where coordinates are the resistances in the layer. np divide is to do rho*dL/Area
             single_layer_resistance = np.divide(resistance_constant, 
@@ -353,57 +461,20 @@ class Structure:
 
 
         resistance = resistance_layer
+        ## add the resistances dividing by the change in Euler number to approximate the parallel thermal resistance
         self.total_resistances[:,:, layer_index] = resistance + np.divide(path_difference,self.total_resistances[:,:,layer_index-1], out=np.zeros_like(resistance, dtype=np.float64),
         where=self.total_resistances[:,:,layer_index-1]!=0)
 
 
-
     ### Sizing calculations
-    def calculate_index_size(self, output_nm = False):
-        """
-        returns the actual size (in pixels) of each index unit in an array, based on the desired fabrication size
-
-
-        Parameters
-        -----------
-            binary_array :
-                array
-                
-            structure_size_nm : 
-                desired structure size (scale)
-                
-            output_nm : bool
-                if True, outputs the pitch in nanometers. Default is false, so output is in SEM pixel units (used by the stream file)
-
-        Returns
-        -----------
-            array_pitch : 
-                size of each index step in an array, in SEM pixel units. Multiply index positions by this number to get pixel coordinates
-        
-        """
-        SEM = self.SEM_settings
-        
-        ##get pixel size
-        self.pix_size = SEM.pixel_size
-
-        ## convert nm structure size to pixels
-        self.structure_size = self.structure_size_nm/self.pix_size
-
-        ### Right now, assume the pixels are square. This is probably something that can be fixed later though.
-        array_pitch = self.structure_size / np.max(self.binary_array.shape[:1])
-        
-        if output_nm == True:
-            array_pitch = self.structure_size_nm / np.max(self.binary_array.shape[:1])
-        
-        return array_pitch
-
+   
+    
     ### Dwell Calculations
-    def calculate_dwells(self, structure_size_nm):
+    def calculate_dwells(self):
         SEM = self.SEM_settings
         
-        self.structure_size_nm = structure_size_nm
         
-        self.index_size = self.calculate_index_size(self.structure_size_nm)
+        self.index_size = self.calculate_index_size(self.structure_size_nm[0])
         
         ## generate range of addressed pixels
         structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
@@ -427,52 +498,57 @@ class Structure:
         ## for each layer, get indices of the fabrication spots
         fablist = []
         coord_list = []
+        max_layer = fabspot_array.shape[2]
         for layer in range(fabspot_array.shape[2]):
             fab_indices = np.argwhere(fabspot_array[:,:,layer])
             fablist.append(fab_indices)
             
             for [x, y] in fab_indices:
-                dwell_time = self.dwell_model(resistance_array[x,y,layer], r=1)
-                xpos = point_xrange[x]
-                ypos = point_yrange[y]
-                coordinate = [xpos, ypos]
-                coord_list.append(coordinate)
-                dwells.append(dwell_time)
+                dwell_time = self.dwell_model(resistance_array[x,y,layer], layer, max_layer)
+                if dwell_time <= 3e5:
+                    xpos = point_xrange[x]
+                    ypos = point_yrange[y]
+                    coordinate = [xpos, ypos]
+                    coord_list.append(coordinate)
+                    dwells.append(dwell_time)
+                else:
+                    pass
         
         coord_arr = np.asarray(coord_list)           
         return coord_arr, dwells
             
-    def dwell_model(self, resistance, r):
+    def dwell_model(self, resistance, layer, max_layer):
         
         ### There's some proximity matrix term that accounts for the gaussian spot, but I don't know how to implement that yet
         # gauss_term = np.exp(-(r**2)/(2*self.sigma**2))
-        gauss_term = 1
+        gauss_term = .5
         growth_term = self.growth_rate*np.exp((-self.k*resistance)) 
-        
-        
-
-        dwell_time = self.layer_height/(growth_term*gauss_term)
+        total_height = max_layer/(self.layer_height*(layer+1))
+    
+        dwell_time = total_height/(growth_term*gauss_term)
         
         return dwell_time
 
-
     def output_stream(self, filename, sample_factor=1):
-        coord_arr, dwells = self.calculate_dwells(self.structure_size_nm)
-        numpoints = str(coord_arr.shape[0]/sample_factor)
+        total_dwell = 0
+        coord_arr, dwells = self.calculate_dwells()
+        numpoints = str(int(coord_arr.shape[0]/sample_factor))
         with open(filename+'.str', 'w') as f:
             f.write('s16\n1\n')
             f.write(numpoints+'\n')
             for k in range(0,int(numpoints), sample_factor):
                 xstring = str(coord_arr[k, 0])
                 ystring = str(coord_arr[k, 1])
-                dwellstring = str(round(dwells[k]))
+                dwell = round(dwells[k])
+                dwellstring = str(dwell)
                 linestring = dwellstring+" "+xstring+" "+ystring+" "
                 if k < int(numpoints)-1:
                     f.write(linestring + '\n')
                 else:
                     f.write(linestring + " "+"0")
+                total_dwell += dwell
+        print(total_dwell/1e7)
         
-
     ### Helper Functions
     
     def plot_slice(self, slice, colorbar=True):
@@ -497,38 +573,30 @@ if __name__ == "__main__":
 
 
 
-    structure = Structure(file, sem_settings, pitch=50, structure_size_nm=1000)
+    structure = Structure(file, sem_settings, pitch=75, structure_size_nm=[1000, 1000, 1000])
     structure.calculate_resistance()
-    #%%
-    plt.imshow(structure.total_resistances[50,:,:], origin='lower')
-    plt.colorbar()
 
-
-    plt.figure()
-    plt.imshow(structure.total_resistances[:,:,320], origin='lower')
-    plt.colorbar()
+    structure.output_stream('testfile.str', sample_factor=2)
     
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection='3d')
+    # ax.scatter(fabpoints[:, 0], fabpoints[:,1], fabpoints[:,2])
+    # ax.invert_xaxis()
+    
+    #%%
+    # plt.imshow(structure.total_resistances[40,:,:50], origin='lower', vmax=1)
+    # plt.colorbar()
 
-    structure.output_stream("testfilename")
- 
+
+    # plt.figure()
+    # plt.imshow(structure.total_resistances[:,:,100], origin='lower')
+    # plt.colorbar()
+
+    # plt.figure()
     # plt.imshow(structure.total_resistances[:,:,30], origin='lower')
     # plt.colorbar()
    
  
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     
     #    file = "Test3DEpsilonArray.npy"
     # array = import_numpy(file)
