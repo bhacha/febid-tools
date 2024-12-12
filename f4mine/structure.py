@@ -1,10 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import skimage.measure as sm
-import skimage.graph as sg
-import scipy.signal as sps
+
 import trimesh as tm
-import trimesh.voxel as tv
+import structure_kernel as stk
+
 
 np.set_printoptions(threshold=np.inf)
 
@@ -37,10 +37,10 @@ class Structure:
         self.threshold = kwargs.get("threshold", None)
         self.pitch = kwargs.get("pitch", None)
         
-        self.growth_rate = .025
-        self.k = 2.5
+        self.growth_rate = .2
+        self.k = 1.25
         self.sigma = 4
-        self.rho = 20
+        self.rho = .01
         
 
         ### file loading
@@ -64,8 +64,12 @@ class Structure:
 
         
         ### sectioning
-        self.labelled_regions, self.centers, self.areas, self.bounding_boxes, self.euler_numbers = self.calculate_regions_in_slices(return_bounds=True)
+        self.labelled_regions, self.centers_pix, self.areas_pix, self.bounding_boxes_pix, self.euler_numbers = self.calculate_regions_in_slices(return_bounds=True)
         
+        #### convert centers and areas to nm
+        self.pitch = self.calculate_index_size(output_nm=True)
+        self.centers = [center_pix * np.array(self.pitch) for center_pix in self.centers_pix]
+        self.areas = self.areas_pix * (self.pitch**2)
         ### initialize resistance matrix
         self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64) 
         
@@ -314,37 +318,11 @@ class Structure:
         
         return array_pitch
 
-    def calculate_structure_size(self, units='pixels'):
-        SEM = self.SEM_settings
-        ##get pixel size, in nm
-        self.pix_size = SEM.pixel_size
-        
-        if units == 'pixels':
-            self.calculate_structure_size_pix()
-        elif units == 'nm':
-            self.calculate_structure_size_nm()
-        
-    def calculate_structure_size_nm(self):
-        pass
-
     def calculate_structure_size_pix(self):       
         ## convert nm structure size to pixels
-        structure_size = self.structure_size_nm[0]/self.pix_size
+        structure_size = self.structure_size_nm[0]/self.pix_size        
+        return structure_size
         
-        structure_pix_xspan = [int(SEM.field_center[0] - structure_size/2), int(SEM.field_center[0] + structure_size/2)]
-        structure_pix_yspan = [int(SEM.field_center[1] - structure_size/2), int(SEM.field_center[1] + structure_size/2)]
-
-        '''I use range in the next step because linspace gives floats and I don't want to worry about rounding methods causing  distortion. The tradeoff is that I need to calculate the step size instead of the number of steps. This will get rounded, but then apply the same step size to everything. I think this would reduce distortion since values won't round away from one another.
-        '''
-        step_size_x = structure_size/self.shape[0]
-        step_size_y = structure_size/self.shape[1]
-        
-        point_xrange = range(structure_pix_xspan[0], structure_pix_xspan[1], int(step_size_x))
-        point_yrange = range(structure_pix_yspan[0], structure_pix_yspan[1], int(step_size_y))
-        
-        
-        
-
     ### Resistance calculations
     
     def calculate_resistance(self):
@@ -365,6 +343,7 @@ class Structure:
         ### split arrays into euler-equivalent stacks, then find the regions where the euler number changes. 
         _, unique_region_indices = self.euler_resistance_subregions()
         
+        # calculate isolated layer resistances
         layer_resistances = self.calculate_layer_resistance()
 
         for layer_number in range(layer_resistances.shape[2]):
@@ -374,7 +353,7 @@ class Structure:
             else:
                 previous_layer = self.total_resistances[:,:, layer_number-1]
 
-            #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens so it won't get the advantage of the different conduction regions. 
+            #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens it won't get the advantage of the different conduction paths. 
             if layer_number not in unique_region_indices[1:]:
                 self.total_resistances[:,:,layer_number] = layer + (previous_layer)
             else:
@@ -409,19 +388,21 @@ class Structure:
         layer_resistances = np.zeros_like(self.binary_array, dtype=np.float64)
 
         #calculate resistances for the single layer. Assume layer_height is constant.
-        rho = self.rho
-        resistance_constant = rho*self.layer_height
-        print(resistance_constant)
+        resistance_constant = self.rho*self.layer_height
+        print(f"Resistance Constant: {resistance_constant}")
+        
+        ## normalize for single pixel line being 50 nm
+        normalized_areas = self.areas / (50**2)
         for layer_number in range((self.binary_array.shape[-1])):
-
             ### create an array where coordinates are the resistances in the layer. np divide is to do rho*dL/Area
             single_layer_resistance = np.divide(resistance_constant, 
-                                        self.areas[:,:,layer_number],
-                                        out=np.zeros_like(self.areas[:,:,layer_number], dtype=np.float64), where=self.areas[:,:,layer_number]!=0)
+                                        normalized_areas[:,:, layer_number],
+                                        out=np.zeros_like(normalized_areas[:,:,layer_number], dtype=np.float64), where=normalized_areas[:,:,layer_number]>0)
 
             
             layer_resistances[:,:,layer_number] = single_layer_resistance
 
+        self._layer_resistances = layer_resistances
         return layer_resistances
 
     def calculate_series_resistance(self, resistances_euler_subregion):
@@ -466,10 +447,44 @@ class Structure:
         where=self.total_resistances[:,:,layer_index-1]!=0)
 
 
-    ### Sizing calculations
-   
+
+  
     
     ### Dwell Calculations
+    def calculate_all_dwells(self):
+        SEM = self.SEM_settings
+    
+        resistance_array = self.total_resistances
+        # print(np.unique(resistance_array))
+
+        # create a new array, which uses the fabrication binary_array as a mask for the resistances
+        fabspot_array = np.where(self.binary_array != 0, resistance_array, 0)
+        
+        
+        dwell_time = self.dwell_model2(resistance_array)
+        
+        
+        return dwell_time
+    
+    def dwell_model2(self):
+        prox_array = self.calculate_prox_mat()
+        layers = self.binary_array.shape[2]
+        for n in range(layers):
+            height = (self.layer_height) * np.ones(prox_array.shape[])
+            
+            
+    
+
+    def calculate_prox_mat(self):
+        
+        neighbors = stk.calculate_neighbors_kernel(self.binary_array, pitch=self.pitch, sigma=self.sigma)
+        
+        growth_term = self.growth_rate*np.exp((-self.k * self.binary_array)) 
+        
+        prox_mat = growth_term*neighbors*self.binary_array
+        
+        return prox_mat
+
     def calculate_dwells(self):
         SEM = self.SEM_settings
         
@@ -505,7 +520,7 @@ class Structure:
             
             for [x, y] in fab_indices:
                 dwell_time = self.dwell_model(resistance_array[x,y,layer], layer, max_layer)
-                if dwell_time <= 3e5:
+                if dwell_time <= 3e10:
                     xpos = point_xrange[x]
                     ypos = point_yrange[y]
                     coordinate = [xpos, ypos]
@@ -523,7 +538,7 @@ class Structure:
         # gauss_term = np.exp(-(r**2)/(2*self.sigma**2))
         gauss_term = .5
         growth_term = self.growth_rate*np.exp((-self.k*resistance)) 
-        total_height = max_layer/(self.layer_height*(layer+1))
+        total_height = max_layer/(self.layer_height*layer)
     
         dwell_time = total_height/(growth_term*gauss_term)
         
@@ -551,9 +566,31 @@ class Structure:
         
     ### Helper Functions
     
-    def plot_slice(self, slice, colorbar=True):
+    def plot_slice(self, view_slice, type, colorbar=True):
+        " Plotting wrapper function. WIP"
+        
+            # if isinstance()
+            # else:
+        array_slice = np.s_[:, :, view_slice]
+        
+
+        
+        if type == 'structure':
+            plot_array = self.binary_array[array_slice]
+            cmap = 'binary'
+        elif type == 'dwells':
+            pass
+        elif type == 'resistances':
+            plot_array = self.total_resistances[array_slice]
+            cmap='viridis'
+        elif type == 'layer-res':
+            plot_array = self._layer_resistances[array_slice]
+            cmap='viridis'
+        else:
+            pass
+    
         plt.figure()
-        plt.imshow(self.binary_array[:,:,slice], aspect='equal', origin='lower')
+        plt.imshow(plot_array, aspect='equal', origin='lower', cmap=cmap)
         if colorbar==True:
             plt.colorbar()            
         else:
@@ -573,10 +610,43 @@ if __name__ == "__main__":
 
 
 
-    structure = Structure(file, sem_settings, pitch=75, structure_size_nm=[1000, 1000, 1000])
+    structure = Structure(file, sem_settings, pitch=50, structure_size_nm=[600, 600, 900])
     structure.calculate_resistance()
+    
+    
+    
+    slice_number = 3
+    structure.plot_slice(slice_number, type='structure')
+    structure.plot_slice(slice_number, type='resistances')
+    structure.plot_slice(slice_number, type='layer-res')
 
-    structure.output_stream('testfile.str', sample_factor=2)
+
+    # # print(structure.layer_height)
+    # dwells = structure.calculate_all_dwells()
+    
+    # plt.figure()
+    # plt.imshow(dwells[:,:,100], origin='lower')
+    # plt.colorbar()
+
+
+    plt.figure()
+    neighb = structure.calculate_prox_mat()
+    plt.imshow(neighb[:,:,20])
+    plt.colorbar()
+    # print(dwells.shape)    
+    
+
+    # print(structure.areas)
+    # print(coord_arr.shape)
+    
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection='3d')
+
+    # ax.scatter(coord_arr[:,0], coord_arr[:,1], coord_arr[:,2], c=dwells, cmap='viridis' )
+    # plt.show()
+
+
+    # structure.output_stream('testfile.str', sample_factor=2)
     
     # fig = plt.figure()
     # ax = fig.add_subplot(projection='3d')
@@ -588,9 +658,6 @@ if __name__ == "__main__":
     # plt.colorbar()
 
 
-    # plt.figure()
-    # plt.imshow(structure.total_resistances[:,:,100], origin='lower')
-    # plt.colorbar()
 
     # plt.figure()
     # plt.imshow(structure.total_resistances[:,:,30], origin='lower')
