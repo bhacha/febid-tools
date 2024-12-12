@@ -242,7 +242,7 @@ class Stream:
     def dither_stream(self, rad, sigma, dwell_time_max_ms = 3.5):
         "Taking the centroids and dwells, space them out a little bit into multiple points so that the dwells are shorter. This uses the sigma from the gaussian spot to keep points in the same general neighborhood from the fab perspective."
         
-        condensed_output = self.condense_points(30, 3000, calculate_new_time=False)
+        condensed_output = self.condense_points(40, 1000, calculate_new_time=False)
         stream_array = condensed_output
         dwell_time_max = dwell_time_max_ms * 1e-3 * 1e7 
         dwell_times = stream_array[:,0]
@@ -272,7 +272,7 @@ class Stream:
                     pass
 
         numpoints = len(out_xpos)
-        outfile = "dithered-newgyr-r30.str"
+        outfile = "dithered-newgyr-r402.str"
         self.write_stream(numpoints=numpoints, dwell_times=out_dwells, xpos=out_xpos, ypos=out_ypos, output_file=outfile)
 
         print(f"The total time of the dithered points is {total_dwell/1e7:.2f} seconds")  
