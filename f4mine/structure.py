@@ -6,9 +6,6 @@ import trimesh as tm
 import structure_kernel as stk
 
 
-np.set_printoptions(threshold=np.inf)
-
-
 class Structure:
 
     def __init__(self,
@@ -45,9 +42,9 @@ class Structure:
 
         ### file loading
         if filepath.endswith(".stl"):
-            self.binary_array = self.import_stl(filepath, self.pitch)
+            self.binary_array = self.import_stl(filepath, self.pitch).astype(int)
         elif filepath.endswith(".npy"):
-            self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True)
+            self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
             
 
         ### sizing
@@ -73,7 +70,6 @@ class Structure:
         ### initialize resistance matrix
         self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64) 
         
-
     @property
     def shape(self):
         shape=self.binary_array.shape
@@ -98,6 +94,7 @@ class Structure:
         
         """
         stl_struct = tm.load_mesh(filepath)
+        stl_struct.apply_scale(10)
         struc_mat = stl_struct.voxelized(pitch=pitch).fill()
         nummat = np.asanyarray(struc_mat.matrix)
         return nummat
@@ -134,7 +131,7 @@ class Structure:
             array = epsilon_array
         return array
 
-    def get_points(self):
+    def DEPRECATED_get_points(self):
  
         """
         This converts the array into points with (x,y,z) values in index units. 
@@ -660,7 +657,7 @@ if __name__ == "__main__":
 
 
     # plt.figure()
-    # plt.imshow(structure.total_resistances[:,:,30], origin='lower')
+    # plt.imshow(structure.total_resistances[:,:,0], origin='lower')
     # plt.colorbar()
    
  
