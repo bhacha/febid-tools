@@ -20,14 +20,16 @@ def calculate_neighbors_kernel(binary_array, pitch, sigma):
     """The following sets the bottom layer to be the main contribution to the kernel. This means contributions from points above don't affect the convolved output. The idea is that each point depends only on the points below it. The center point is set to 1, so that blank areas above 
     This should give a pretty decent local approximation, but does not give the full branch_lengths.
     """
+  
     
+    neighbor_kernel = np.zeros((9,9,1))
+    neighbor_kernel[1:7, 1:7, 0]= np.exp(-((1*pitch)**2) / (2*sigma**2))
+    neighbor_kernel[2:6, 2:6, 0]= np.exp(-((2*pitch)**2) / (2*sigma**2))
+    neighbor_kernel[3:5, 3:5,0] = np.exp(-((3*pitch)**2) / (2*sigma**2))
+    neighbor_kernel[4, 4, 0] = np.exp(-(4*pitch**2) / (2*sigma**2))
 
-    neighbor_kernel = np.ones((3,3,3))
-    neighbor_kernel[:, :, :2] = 0
-    neighbor_kernel[:,:,2] = 5
-    neighbor_kernel[1,1,1] = 1
-    neighbor_arr = snd.correlate(binary_array.astype(int), neighbor_kernel)
-    
+    neighbor_arr = snd.correlate(binary_array.astype(int), neighbor_kernel, mode='constant', cval=0)
+
 
     return neighbor_arr
 
