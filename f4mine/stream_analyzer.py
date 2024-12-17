@@ -127,7 +127,7 @@ class Stream:
         for n in range(len(point_array_regions)):
             dwells = point_array_regions[n][:, 0].astype(float)
             points = point_array_regions[n][:, 1:].astype(float)
-            clusters = DBSCAN(eps=radius, min_samples = int(index_range/80)).fit(points)
+            clusters = DBSCAN(eps=radius, min_samples = int(10)).fit(points)
             labels = clusters.labels_
             unique_labels = set(labels)
             
@@ -242,7 +242,7 @@ class Stream:
     def dither_stream(self, rad, sigma, dwell_time_max_ms = 3.5):
         "Taking the centroids and dwells, space them out a little bit into multiple points so that the dwells are shorter. This uses the sigma from the gaussian spot to keep points in the same general neighborhood from the fab perspective."
         
-        condensed_output = self.condense_points(30, 2000, calculate_new_time=False)
+        condensed_output = self.condense_points(70, 10000, calculate_new_time=False)
         stream_array = condensed_output
         dwell_time_max = dwell_time_max_ms * 1e-3 * 1e7 
         dwell_times = stream_array[:,0]
@@ -273,7 +273,7 @@ class Stream:
 
         
         numpoints = len(out_xpos)
-        outfile = "dithered-newgyr2.str"
+        outfile = "DitheredGyroid-GR220-3x3x2.str"
         self.write_stream(numpoints=numpoints, dwell_times=out_dwells, xpos=out_xpos, ypos=out_ypos, output_file=outfile)
 
         print(f"The total time of the dithered points is {total_dwell/1e7:.2f} seconds")  
@@ -282,7 +282,7 @@ class Stream:
 
 if __name__ == "__main__":
     
-    infile = "4x4x4Gyroid-ScaledUp-GR250.str"
+    infile = "3x3x2-Gyroid-GR220-1063.2s.str"
     stream = load_stream(infile)
     
     
