@@ -6,18 +6,7 @@ import scipy.optimize as scop
 from scipy.spatial import KDTree
 import trimesh as tm
 import structure_kernel as stk
-import scipy.ndimage as snd
 
-debug_mode = 'full'
-"""
-full
-none
-
-"""
-
-def debug(message):
-    if debug_mode == 'full':
-        print(message)
 
 class Structure:
 
@@ -45,9 +34,9 @@ class Structure:
         self.SEM_settings = SEM_settings
         
         self.threshold = kwargs.get("threshold", None)
-        self.input_pitch = kwargs.get("pitch", None)
+        self.pitch = kwargs.get("pitch", None)
         
-        self.growth_rate = .025
+        self.growth_rate = .05
         self.k = 1.25
         self.sigma = 4
         self.rho = 1
@@ -55,7 +44,7 @@ class Structure:
 
         ### file loading
         if filepath.endswith(".stl"):
-            self.binary_array = self.import_stl(filepath, self.input_pitch, scale=1).astype(int)
+            self.binary_array = self.import_stl(filepath, self.pitch).astype(int)
         elif filepath.endswith(".npy"):
             self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
             
@@ -69,7 +58,6 @@ class Structure:
         except TypeError:
             self.structure_size_nm = [structure_size_nm, structure_size_nm, structure_size_nm]
 
-        debug("Getting coordinates")
         ### generate list of points, and define the layer_height
         self.get_coordinates()
 
@@ -88,16 +76,6 @@ class Structure:
 
         ###
         self.dwell_list = []
-        
-        
-        scale_factor = (3,3,1)
-        new_array = snd.zoom(self.binary_array, scale_factor)
-        plt.figure()
-        plt.imshow(new_array[:,:,10])
-        plt.figure()
-        plt.imshow(self.binary_array[:,:,10])
-        
-        
         
     @property
     def shape(self):
@@ -163,6 +141,24 @@ class Structure:
             array = epsilon_array
         return array
 
+    def DEPRECATED_get_points(self):
+        """
+        This converts the array into points with (x,y,z) values in index units. 
+
+        """
+        z_index = 0
+        points = []
+        for layer in self.nonzero_indices:
+            ### Go through each layer and create tuples for the xy indices
+            xy_indices = zip(layer[0], layer[1])
+            for n in xy_indices:
+                ### Export all the points (in array units), with their z index
+                points.append((n[0], n[1], z_index))
+
+            z_index +=1
+
+        #unfortunately the tuple is in order (Z, X, Y) for some reason????
+        return points
     
     def get_coordinates(self):
         """
@@ -178,8 +174,6 @@ class Structure:
         array_fab_points = np.argwhere(self.binary_array)
         
         nm_fab_points = array_fab_points * np.array([x_step_size, y_step_size, z_step_size])
-        
-        debug("Pixel Coordinates Calculated!")
         
         return nm_fab_points
 
@@ -378,7 +372,6 @@ class Structure:
         
         # calculate isolated layer resistances
         layer_resistances = self.calculate_layer_resistance()
-        debug("Layer resistances calculated")
 
         for layer_number in range(layer_resistances.shape[2]):
             layer = layer_resistances[:,:,layer_number]
@@ -393,8 +386,7 @@ class Structure:
             else:
                 self.calculate_parallel_resistance(layer, layer_number)
             
-        debug("Total resistances calculated")
-        self.resistance_calculated_flag = True
+        
         return self.total_resistances
         
     def euler_resistance_subregions(self):
@@ -427,7 +419,6 @@ class Structure:
         
         ## normalize for single pixel line being 50 nm
         normalized_areas = self.areas / (50**2)
-        
         for layer_number in range((self.binary_array.shape[-1])):
             ### create an array where coordinates are the resistances in the layer. np divide is to do rho*dL/Area
             single_layer_resistance = np.divide(resistance_constant, 
@@ -483,7 +474,22 @@ class Structure:
 
 
     
-    ### Dwell Calculations      
+    ### Dwell Calculations
+    def DEPRECATED_calculate_all_dwells(self):
+        SEM = self.SEM_settings
+    
+        resistance_array = self.total_resistances
+        # print(np.unique(resistance_array))
+
+        # create a new array, which uses the fabrication binary_array as a mask for the resistances
+        fabspot_array = np.where(self.binary_array != 0, resistance_array, 0)
+        
+        
+        dwell_time = self.dwell_model2(resistance_array)
+        
+        
+        return dwell_time
+      
     def calculate_prox_mat(self, layer_number):
         coords, resists = self.get_points_and_resistances(layer_number)
         tree = KDTree(coords)
@@ -494,7 +500,7 @@ class Structure:
         prox_matrix.data = self.proximity_function(distance_mat.data, resistance)
         return prox_matrix
 
-    def solve_layer(self, proximity_matrix, dz, tol=1e-2):
+    def solve_layer(self, proximity_matrix, dz, tol=1e-3):
         "From F3ast"
         upper_bound = dz / proximity_matrix.diagonal()
         y = dz*np.ones(proximity_matrix.shape[1])
@@ -504,16 +510,14 @@ class Structure:
     def solve_all_layers(self):
         "adapted from f3ast"
         layer_list = []
-        debug("Calculating proximity matrices")
         for layer_number in range(self.binary_array.shape[2]):
             prox_mat = self.calculate_prox_mat(layer_number)
             layer_solution = self.solve_layer(prox_mat, self.layer_height, tol=1e-3)
             layer_list.append(layer_solution)
-        debug("Proximity matrices calculated")
+        
         return layer_list
     
     def calculate_dwells(self):
-        debug("Calculating dwell points")
         dwell_list = []
         layers = self.solve_all_layers()
         for layer_number, layer in enumerate(layers):
@@ -524,7 +528,7 @@ class Structure:
                 dwell = point
                 dwell_list.append([dwell, x_coordinate, y_coordinate]) 
         self.dwell_list = dwell_list
-        print(f" Calculated {len(dwell_list)} dwell points")
+        print(len(dwell_list))
         return dwell_list
 
 
@@ -536,42 +540,110 @@ class Structure:
             * np.exp(-(distances**2) / (2 * self.sigma**2))
         )
     
-    def expand_points(stream_step_size, factor):
-        return
 
-    def prepare_stream(self, min_dwell, max_dwell):
-        debug("Preparing Stream")
-        if len(self.dwell_list) < 1:
-            self.calculate_dwells()
-            
+    def DEPRECATED_calculate_dwells(self):
         SEM = self.SEM_settings
-        print(f"Structure Size: {self.structure_size}")
-        print(f"Structure Size nm : {self.structure_size_nm}")
+        
+        
+        self.index_size = self.calculate_index_size(self.structure_size_nm[0])
+        
+        ## generate range of addressed pixels
         structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
         structure_yspan = [int(SEM.field_center[1] - self.structure_size/2), int(SEM.field_center[1] + self.structure_size/2)]
-        print(f"X span: {structure_xspan[1] - structure_xspan[0]}")
-        
+
         step_size_x = self.structure_size/self.binary_array.shape[0]
         step_size_y = self.structure_size/self.binary_array.shape[1]
-        
-        print(f"Step Size: {step_size_x}")
         
         point_xrange = range(structure_xspan[0], structure_xspan[1], int(step_size_x))
         point_yrange = range(structure_yspan[0], structure_yspan[1], int(step_size_y))
 
+        dwells = []
 
-        points = np.nonzero(self.binary_array.astype(np.float16))
+        
+        resistance_array = self.total_resistances
+        # print(np.unique(resistance_array))
+
+        # create a new array, which uses the fabrication binary_array as a mask for the resistances
+        fabspot_array = np.where(self.binary_array != 0, resistance_array, 0)
+        
+        ## for each layer, get indices of the fabrication spots
+        fablist = []
+        coord_list = []
+        max_layer = fabspot_array.shape[2]
+        for layer in range(fabspot_array.shape[2]):
+            fab_indices = np.argwhere(fabspot_array[:,:,layer])
+            fablist.append(fab_indices)
+            
+            for [x, y] in fab_indices:
+                dwell_time = self.dwell_model(resistance_array[x,y,layer], layer, max_layer)
+                if dwell_time <= 3e10:
+                    xpos = point_xrange[x]
+                    ypos = point_yrange[y]
+                    coordinate = [xpos, ypos]
+                    coord_list.append(coordinate)
+                    dwells.append(dwell_time)
+                else:
+                    pass
+        
+        coord_arr = np.asarray(coord_list)           
+        return coord_arr, dwells
+            
+    def DEPRECATED_dwell_model(self, resistance, layer, max_layer):
+        
+        ### There's some proximity matrix term that accounts for the gaussian spot, but I don't know how to implement that yet
+        # gauss_term = np.exp(-(r**2)/(2*self.sigma**2))
+        gauss_term = .5
+        growth_term = self.growth_rate*np.exp((-self.k*resistance)) 
+        total_height = max_layer/(self.layer_height*layer)
+    
+        dwell_time = total_height/(growth_term*gauss_term)
+        
+        return dwell_time
+
+    def DEPRECATED_output_stream(self, filename, sample_factor=1):
+        total_dwell = 0
+        coord_arr, dwells = self.calculate_dwells()
+        numpoints = str(int(coord_arr.shape[0]/sample_factor))
+        with open(filename+'.str', 'w') as f:
+            f.write('s16\n1\n')
+            f.write(numpoints+'\n')
+            for k in range(0,int(numpoints), sample_factor):
+                xstring = str(coord_arr[k, 0])
+                ystring = str(coord_arr[k, 1])
+                dwell = round(dwells[k])
+                dwellstring = str(dwell)
+                linestring = dwellstring+" "+xstring+" "+ystring+" "
+                if k < int(numpoints)-1:
+                    f.write(linestring + '\n')
+                else:
+                    f.write(linestring + " "+"0")
+                total_dwell += dwell
+        print(total_dwell/1e7)
+
+    def prepare_stream(self, min_dwell, max_dwell):
+        if len(self.dwell_list) < 5:
+            self.calculate_dwells()
+            
+        SEM = self.SEM_settings
+        structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
+        structure_yspan = [int(SEM.field_center[1] - self.structure_size/2), int(SEM.field_center[1] + self.structure_size/2)]
+
+        step_size_x = self.structure_size/self.binary_array.shape[0]
+        step_size_y = self.structure_size/self.binary_array.shape[1]
+        
+        point_xrange = range(structure_xspan[0], structure_xspan[1], int(step_size_x))
+        point_yrange = range(structure_yspan[0], structure_yspan[1], int(step_size_y))
+
+        points = np.nonzero(self.binary_array.astype(np.float32))
         indices = list(map(list, zip(*points[:2])))
         stream_list = []
         for point_number, index_coord in enumerate(indices):
             coord_x = point_xrange[index_coord[0]]
             coord_y = point_yrange[index_coord[1]]
-            #print(f"X: {coord_x}, Y: {coord_y}")
-            dwell = self.dwell_list[point_number][0]/10000 #convert
+            dwell = self.dwell_list[point_number]/10000 #convert
 
             if (dwell>=min_dwell) and (dwell<= max_dwell):
                 stream_line = (int(dwell), coord_x, coord_y)
-                print(stream_line)
                 stream_list.append(stream_line)
         return stream_list
 
@@ -583,12 +655,11 @@ class Structure:
 
 
     def output_stream(self, filename, sample_factor=1):
-        stream_list = self.prepare_stream(min_dwell=1, max_dwell=5e5)
+        stream_list = self.prepare_stream(min_dwell=.1, max_dwell=100)
         numpoints = len(stream_list)
-        total_dwell = 0
         with open(filename+'.str', 'w') as f:
             f.write('s16\n1\n')
-            f.write(str(numpoints)+'\n')
+            f.write(numpoints+'\n')
             for k in range(0,int(numpoints), sample_factor):
                 xstring = str(stream_list[k][1])
                 ystring = str(stream_list[k][1])
@@ -639,7 +710,6 @@ if __name__ == "__main__":
     from sem import * 
     import time
 
-
     sem_settings = SEM(addressable_pixels=[65536, 56576],
                         screen_width=10.2e3,
                         )
@@ -649,7 +719,6 @@ if __name__ == "__main__":
 
 
 
-    structure = Structure(file, sem_settings, pitch=100, structure_size_nm=[1000, 1000, 500])
-    print(f"structure array size: {structure.binary_array.shape}")
+    structure = Structure(file, sem_settings, pitch=75, structure_size_nm=[1000, 1000, 1000])
     structure.output_stream("TestStreamOutput")
    
