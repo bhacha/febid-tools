@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import skimage.measure as sm
-
+import scipy.sparse as scsp
+import scipy.optimize as scop
+from scipy.spatial import KDTree
 import trimesh as tm
 import structure_kernel as stk
 
@@ -34,10 +36,10 @@ class Structure:
         self.threshold = kwargs.get("threshold", None)
         self.pitch = kwargs.get("pitch", None)
         
-        self.growth_rate = .2
+        self.growth_rate = .05
         self.k = 1.25
         self.sigma = 4
-        self.rho = .01
+        self.rho = 1
         
 
         ### file loading
@@ -67,15 +69,20 @@ class Structure:
         self.pitch = self.calculate_index_size(output_nm=True)
         self.centers = [center_pix * np.array(self.pitch) for center_pix in self.centers_pix]
         self.areas = self.areas_pix * (self.pitch**2)
+
         ### initialize resistance matrix
-        self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64) 
+        self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64)
+        self.resistance_calculated_flag = False 
+
+        ###
+        self.dwell_list = []
         
     @property
     def shape(self):
         shape=self.binary_array.shape
         return shape        
 
-    def import_stl(self, filepath, pitch):
+    def import_stl(self, filepath, pitch, scale=False):
         """
         import stl using trimesh, then convert to a filled numpy array
         
@@ -94,9 +101,12 @@ class Structure:
         
         """
         stl_struct = tm.load_mesh(filepath)
-        stl_struct.apply_scale(10)
+        print("Slicing structure...")
+        if scale != False:
+            stl_struct.apply_scale(scale)
         struc_mat = stl_struct.voxelized(pitch=pitch).fill()
         nummat = np.asanyarray(struc_mat.matrix)
+        print("Slicing Completed!")
         return nummat
 
     def import_numpy(self, filepath, binarize=True, **kwargs):
@@ -132,7 +142,6 @@ class Structure:
         return array
 
     def DEPRECATED_get_points(self):
- 
         """
         This converts the array into points with (x,y,z) values in index units. 
 
@@ -167,6 +176,27 @@ class Structure:
         nm_fab_points = array_fab_points * np.array([x_step_size, y_step_size, z_step_size])
         
         return nm_fab_points
+
+    def get_points_and_resistances(self, slice_number):
+        if self.resistance_calculated_flag == False:
+            self.calculate_resistance()
+    
+        ## calculate desired size per step. nm/array_pixel
+        x_step_size = self.structure_size_nm[0] / self.binary_array.shape[0]
+        y_step_size = self.structure_size_nm[1] / self.binary_array.shape[1]
+
+        layer = self.binary_array[:,:,slice_number]
+        res_layer = self.total_resistances[:,:,slice_number]
+
+        points_in_slice = np.nonzero(layer.astype(np.float32))
+        indices_in_slice = list(map(list, zip(*points_in_slice)))
+
+        coords_in_slice = np.asarray(indices_in_slice)
+        resistances_in_slice = res_layer[points_in_slice]
+        
+        coordinates = coords_in_slice * np.array([x_step_size, y_step_size])
+        return coordinates, resistances_in_slice
+
 
     ### Sectioning/Regions and sizing
     def calculate_regions_in_slices(self, return_bounds=False):
@@ -386,7 +416,6 @@ class Structure:
 
         #calculate resistances for the single layer. Assume layer_height is constant.
         resistance_constant = self.rho*self.layer_height
-        print(f"Resistance Constant: {resistance_constant}")
         
         ## normalize for single pixel line being 50 nm
         normalized_areas = self.areas / (50**2)
@@ -444,11 +473,9 @@ class Structure:
         where=self.total_resistances[:,:,layer_index-1]!=0)
 
 
-
-  
     
     ### Dwell Calculations
-    def calculate_all_dwells(self):
+    def DEPRECATED_calculate_all_dwells(self):
         SEM = self.SEM_settings
     
         resistance_array = self.total_resistances
@@ -462,27 +489,59 @@ class Structure:
         
         
         return dwell_time
-    
-    def dwell_model2(self):
-        prox_array = self.calculate_prox_mat()
-        layers = self.binary_array.shape[2]
-        for n in range(layers):
-            height = (self.layer_height) * np.ones(prox_array.shape[])
-            
-            
-    
+      
+    def calculate_prox_mat(self, layer_number):
+        coords, resists = self.get_points_and_resistances(layer_number)
+        tree = KDTree(coords)
+        distance_threshold = 3*self.sigma
+        distance_mat = tree.sparse_distance_matrix(tree, distance_threshold, output_type="coo_matrix")
+        resistance = resists[distance_mat.row]
+        prox_matrix = distance_mat.copy()
+        prox_matrix.data = self.proximity_function(distance_mat.data, resistance)
+        return prox_matrix
 
-    def calculate_prox_mat(self):
-        
-        neighbors = stk.calculate_neighbors_kernel(self.binary_array, pitch=self.pitch, sigma=self.sigma)
-        
-        growth_term = self.growth_rate*np.exp((-self.k * self.binary_array)) 
-        
-        prox_mat = growth_term*neighbors*self.binary_array
-        
-        return prox_mat
+    def solve_layer(self, proximity_matrix, dz, tol=1e-3):
+        "From F3ast"
+        upper_bound = dz / proximity_matrix.diagonal()
+        y = dz*np.ones(proximity_matrix.shape[1])
+        result = scop.lsq_linear(proximity_matrix, y, bounds=(0, upper_bound), tol=tol)
+        return result.x
 
+    def solve_all_layers(self):
+        "adapted from f3ast"
+        layer_list = []
+        for layer_number in range(self.binary_array.shape[2]):
+            prox_mat = self.calculate_prox_mat(layer_number)
+            layer_solution = self.solve_layer(prox_mat, self.layer_height, tol=1e-3)
+            layer_list.append(layer_solution)
+        
+        return layer_list
+    
     def calculate_dwells(self):
+        dwell_list = []
+        layers = self.solve_all_layers()
+        for layer_number, layer in enumerate(layers):
+            coordinates_in_layer, _ = self.get_points_and_resistances(layer_number)
+            for index, point in enumerate(layer):
+                x_coordinate = coordinates_in_layer[index][0]
+                y_coordinate = coordinates_in_layer[index][1]
+                dwell = point
+                dwell_list.append([dwell, x_coordinate, y_coordinate]) 
+        self.dwell_list = dwell_list
+        print(len(dwell_list))
+        return dwell_list
+
+
+    def proximity_function(self, distances, resistance):
+        """ from f3ast """
+        return (
+            self.growth_rate
+            * np.exp(-self.k * resistance)
+            * np.exp(-(distances**2) / (2 * self.sigma**2))
+        )
+    
+
+    def DEPRECATED_calculate_dwells(self):
         SEM = self.SEM_settings
         
         
@@ -529,7 +588,7 @@ class Structure:
         coord_arr = np.asarray(coord_list)           
         return coord_arr, dwells
             
-    def dwell_model(self, resistance, layer, max_layer):
+    def DEPRECATED_dwell_model(self, resistance, layer, max_layer):
         
         ### There's some proximity matrix term that accounts for the gaussian spot, but I don't know how to implement that yet
         # gauss_term = np.exp(-(r**2)/(2*self.sigma**2))
@@ -541,7 +600,7 @@ class Structure:
         
         return dwell_time
 
-    def output_stream(self, filename, sample_factor=1):
+    def DEPRECATED_output_stream(self, filename, sample_factor=1):
         total_dwell = 0
         coord_arr, dwells = self.calculate_dwells()
         numpoints = str(int(coord_arr.shape[0]/sample_factor))
@@ -560,9 +619,62 @@ class Structure:
                     f.write(linestring + " "+"0")
                 total_dwell += dwell
         print(total_dwell/1e7)
+
+    def prepare_stream(self, min_dwell, max_dwell):
+        if len(self.dwell_list) < 5:
+            self.calculate_dwells()
+            
+        SEM = self.SEM_settings
+        structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
+        structure_yspan = [int(SEM.field_center[1] - self.structure_size/2), int(SEM.field_center[1] + self.structure_size/2)]
+
+        step_size_x = self.structure_size/self.binary_array.shape[0]
+        step_size_y = self.structure_size/self.binary_array.shape[1]
         
+        point_xrange = range(structure_xspan[0], structure_xspan[1], int(step_size_x))
+        point_yrange = range(structure_yspan[0], structure_yspan[1], int(step_size_y))
+
+        points = np.nonzero(self.binary_array.astype(np.float32))
+        indices = list(map(list, zip(*points[:2])))
+        stream_list = []
+        for point_number, index_coord in enumerate(indices):
+            coord_x = point_xrange[index_coord[0]]
+            coord_y = point_yrange[index_coord[1]]
+            dwell = self.dwell_list[point_number]/10000 #convert
+
+            if (dwell>=min_dwell) and (dwell<= max_dwell):
+                stream_line = (int(dwell), coord_x, coord_y)
+                stream_list.append(stream_line)
+        return stream_list
+
+
+
+        # coords_in_slice = np.asarray(indices_in_slice)
+        
+        # coordinates = coords_in_slice * np.array([x_step_size, y_step_size])
+
+
+    def output_stream(self, filename, sample_factor=1):
+        stream_list = self.prepare_stream(min_dwell=.1, max_dwell=100)
+        numpoints = len(stream_list)
+        with open(filename+'.str', 'w') as f:
+            f.write('s16\n1\n')
+            f.write(numpoints+'\n')
+            for k in range(0,int(numpoints), sample_factor):
+                xstring = str(stream_list[k][1])
+                ystring = str(stream_list[k][1])
+                dwell = stream_list[k][0]
+                dwellstring = str(dwell)
+                linestring = dwellstring+" "+xstring+" "+ystring+" "
+                if k < int(numpoints)-1:
+                    f.write(linestring + '\n')
+                else:
+                    f.write(linestring + " "+"0")
+                total_dwell += dwell
+        print(total_dwell/1e7)
+        
+
     ### Helper Functions
-    
     def plot_slice(self, view_slice, type, colorbar=True):
         " Plotting wrapper function. WIP"
         
@@ -607,120 +719,6 @@ if __name__ == "__main__":
 
 
 
-    structure = Structure(file, sem_settings, pitch=50, structure_size_nm=[600, 600, 900])
-    structure.calculate_resistance()
-    
-    
-    
-    slice_number = 3
-    structure.plot_slice(slice_number, type='structure')
-    structure.plot_slice(slice_number, type='resistances')
-    structure.plot_slice(slice_number, type='layer-res')
-
-
-    # # print(structure.layer_height)
-    # dwells = structure.calculate_all_dwells()
-    
-    # plt.figure()
-    # plt.imshow(dwells[:,:,100], origin='lower')
-    # plt.colorbar()
-
-
-    plt.figure()
-    neighb = structure.calculate_prox_mat()
-    plt.imshow(neighb[:,:,20])
-    plt.colorbar()
-    # print(dwells.shape)    
-    
-
-    # print(structure.areas)
-    # print(coord_arr.shape)
-    
-    # fig = plt.figure()
-    # ax = fig.add_subplot(projection='3d')
-
-    # ax.scatter(coord_arr[:,0], coord_arr[:,1], coord_arr[:,2], c=dwells, cmap='viridis' )
-    # plt.show()
-
-
-    # structure.output_stream('testfile.str', sample_factor=2)
-    
-    # fig = plt.figure()
-    # ax = fig.add_subplot(projection='3d')
-    # ax.scatter(fabpoints[:, 0], fabpoints[:,1], fabpoints[:,2])
-    # ax.invert_xaxis()
-    
-    #%%
-    # plt.imshow(structure.total_resistances[40,:,:50], origin='lower', vmax=1)
-    # plt.colorbar()
-
-
-
-    # plt.figure()
-    # plt.imshow(structure.total_resistances[:,:,0], origin='lower')
-    # plt.colorbar()
+    structure = Structure(file, sem_settings, pitch=75, structure_size_nm=[1000, 1000, 1000])
+    structure.output_stream("TestStreamOutput")
    
- 
-    
-    #    file = "Test3DEpsilonArray.npy"
-    # array = import_numpy(file)
-    # threshold = 9
-    # binary_array = binarize(array, threshold=threshold)
-
-    # layer_height = 100 #nm
-    # growth_rate = 200 #nm/s
-    # k_term = 1.1 #nm
-
-    # dwell_list = []
-    # for n in np.linspace(0, 2, 30):
-    #         dwell = dwell_model(layer_height, growth_rate, k_term, sigma=4, resistance=n, r=4)
-    #         dwell_list.append(dwell)
-    #         plt.scatter(n, dwell)
-
-    
-    # plt.xlabel("Resistance")
-    # plt.ylabel("Dwell Time")
-    # plt.show()
-    # bins = 900
-    # dwell_sum = np.sort(dwell_list)
-    # dwell_fun = np.array(range(bins))/float(bins)
-
-    # plt.figure()
-    # plt.plot(dwell_sum, dwell_fun)
-    # plt.show()
-
-    ## Add a block to help orient things
-    # binary_array[30:90, 50:90, :20] = True
-
-    
-    # labels, indices, areas = calculate_regions_in_slices(binary_array[:,:,:].astype(int))
-
-    # test = calculate_resistance(binary_array[:,:,:40])
-
-    # plot_slice = 30
-
-    # print(areas[:,:,plot_slice])
-
-    # plt.figure()
-    # plt.imshow(areas[:,:,plot_slice], cmap='viridis')
-    # plt.title("Areas")
-    # plt.colorbar()
-
-    # plt.figure()
-    # plt.imshow(labels[:,:,plot_slice], cmap='Paired')
-    # plt.title("Labelled Regions")
-    # plt.colorbar()
-
-    # plt.figure()
-    # plt.imshow(binary_array[:,:,plot_slice], cmap='Paired')
-    # plt.title("Raw Binary Array")
-    # plt.colorbar()
-    
-    # plt.figure()
-    # plt.imshow(test[:,:,plot_slice], cmap='viridis')
-    # plt.title("resistance array")
-    # plt.colorbar()
-
-
-    # plt.show()
-# %%
