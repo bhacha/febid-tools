@@ -53,7 +53,7 @@ class Stream:
         
         self.x_array = np.asarray(self.x_points)
         self.y_array = np.asarray(self.y_points)
-        self.dwell_array = np.asarray(self.dwells)
+        self.dwell_array = np.asarray(self.dwells, dtype=np.float64)
         ## Gotta do some weird reshaping/transposing to make this work.
         self.point_array = np.concatenate((self.dwell_array, self.x_array, self.y_array)).reshape(3, -1).T
            
@@ -75,6 +75,7 @@ class Stream:
     
         if hasattr(self, 'point_array') == False:
             self.points_to_array()
+        print(self.dwell_array)
         total_time = np.sum(self.dwell_array)
         
         if units == 'seconds':
@@ -224,11 +225,10 @@ class Stream:
         self.write_stream(outfile, numpoints, dwell_times, xpos, ypos)
 
     def write_stream(self, output_file, numpoints, dwell_times, xpos, ypos):
-         numpoints = str(numpoints)
 
          with open(output_file, 'w') as f:
             f.write('s16\n1\n')
-            f.write(numpoints+'\n')
+            f.write(str(numpoints)+'\n')
             for k in range(int(numpoints)):
                 xstring = str(xpos[k])
                 ystring = str(ypos[k])
@@ -242,7 +242,7 @@ class Stream:
     def dither_stream(self, rad, sigma, dwell_time_max_ms = 3.5):
         "Taking the centroids and dwells, space them out a little bit into multiple points so that the dwells are shorter. This uses the sigma from the gaussian spot to keep points in the same general neighborhood from the fab perspective."
         
-        condensed_output = self.condense_points(40, 1000, calculate_new_time=False)
+        condensed_output = self.condense_points(30, 2000, calculate_new_time=False)
         stream_array = condensed_output
         dwell_time_max = dwell_time_max_ms * 1e-3 * 1e7 
         dwell_times = stream_array[:,0]
@@ -271,8 +271,9 @@ class Stream:
                 else:
                     pass
 
+        
         numpoints = len(out_xpos)
-        outfile = "dithered-newgyr-r402.str"
+        outfile = "dithered-newgyr2.str"
         self.write_stream(numpoints=numpoints, dwell_times=out_dwells, xpos=out_xpos, ypos=out_ypos, output_file=outfile)
 
         print(f"The total time of the dithered points is {total_dwell/1e7:.2f} seconds")  
@@ -281,13 +282,13 @@ class Stream:
 
 if __name__ == "__main__":
     
-    infile = "RescaledGyroid-4x4x4-v2_200gr_125k_4sig_p3.str"
+    infile = "4x4x4Gyroid-ScaledUp-GR250.str"
     stream = load_stream(infile)
     
     
     stream.calculate_total_time()
 
-    stream.dither_stream(rad = 10, sigma = 3)
+    stream.dither_stream(rad = 5, sigma = 3)
     
     # outfile = "ThreeLeg45Deg-GR225-Condensed.str"
     # stream.output_stream(outfile, type='condensed', detailed_name = True, index_range = 400, radius=30)
