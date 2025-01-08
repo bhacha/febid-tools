@@ -31,5 +31,9 @@ def fit_calibration(dwell_times, lengths, gr0=0.1, k0=1):
         return fn, popt, pcov
 
 
-def get_resistance(structure, single_pixel_width=50):
+def get_resistance(image_stack, single_pixel_width=50):
+    
+    
     pass
+
+
