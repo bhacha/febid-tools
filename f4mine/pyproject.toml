@@ -1,0 +1,15 @@
+[project]
+name = "f4mine"
+version = "0.0.2"
+authors = [
+  { name="Brandon Hacha", email="brandon@brandonhacha.com" },
+]
+description = "A package for FEBID "
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = []
+
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

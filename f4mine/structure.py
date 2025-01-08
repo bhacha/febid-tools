@@ -5,26 +5,69 @@ import scipy.sparse as scsp
 import scipy.optimize as scop
 from scipy.spatial import KDTree
 import trimesh as tm
-import structure_kernel as stk
+# from . import structure_kernel as stk
 import scipy.ndimage as snd
 
 debug_mode = 'full'
 """
 full
+checks
+output
 none
 
 """
 
-def debug(message):
-    if debug_mode == 'full':
+def debug(message, thresh='full'):
+    
+    thresh_meaning = {'full': 0, 'checks': 1, 'output': 2, 'none': 3 }
+    
+    requested_level = thresh_meaning[debug_mode]
+    required_level = thresh_meaning[thresh]
+    
+    if requested_level <= required_level:
         print(message)
+
+
+def import_mesh(filepath, pitch):
+    """
+    Import mesh object. Convert to image/array using pitch
+    
+    Parameters
+    -----------
+    
+    filepath : str
+        path to file
+        
+    pitches : int
+        array spacing used to reconstruct mesh
+    
+    """
+    return Structure(filepath, pitch=pitch)
+
+
+def import_image(filepath, threshold):
+    """
+    Import an image or numpy array. Use the threshold to convert to binary image.
+    
+    Parameters
+    -----------
+    
+    filepath : str
+        path to file
+    
+    threshold : float, int
+        number to compare pixel/element values with
+    
+    """
+    return Structure(filepath, threshold=threshold)
+    
+
+
 
 class Structure:
 
     def __init__(self,
                  filepath,
-                 SEM_settings,
-                 structure_size_nm,
                  **kwargs):
         
         """
@@ -41,70 +84,37 @@ class Structure:
         structure_size_nm : list [X, Y, Z] or float
             if list/array, X Y and Z are defined directly. If float, then the structure is assumed to be a cube.
         """
-                
-        self.SEM_settings = SEM_settings
-        
         self.threshold = kwargs.get("threshold", None)
         self.input_pitch = kwargs.get("pitch", None)
-        
-        self.growth_rate = .025
-        self.k = 1.25
-        self.sigma = 4
-        self.rho = 1
-        
 
         ### file loading
         if filepath.endswith(".stl"):
-            self.binary_array = self.import_stl(filepath, self.input_pitch, scale=1).astype(int)
+            self.binary_array = self._import_stl(filepath, self.input_pitch, scale=1).astype(int)
         elif filepath.endswith(".npy"):
-            self.binary_array = self.import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
+            self.binary_array = self._import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
             
-
-        ### sizing
-        try:
-            if len(structure_size_nm) == 3:
-                self.structure_size_nm = structure_size_nm
-            else:
-                self.structure_size_nm = [structure_size_nm, structure_size_nm, structure_size_nm]
-        except TypeError:
-            self.structure_size_nm = [structure_size_nm, structure_size_nm, structure_size_nm]
-
-        debug("Getting coordinates")
-        ### generate list of points, and define the layer_height
-        self.get_coordinates()
-
+        ### List of Properties ###
+        self.structure_size_nm = None  #size in nm
+        self.labelled_regions = None   # discrete, connected regions in each layer
+        self.centers_pix = None        # center locations of regions, in pixels
+        self.areas_pix = None          # areas of regions, in pixels
+        self.bounding_boxes_pix = None # bounds of regions, in pixels
+        self.euler_numbers = None      # number of connected regions, minus number of holes. changes in euler numbers between layers indicates features have merged/separated
+        self.structure_size_fab = None # Size of structure in fab pixels
+        self.pix_size = None           # Pixel size of fab SEM
+        self.pitch_nm = None           # Pitch of input array in nm units
+        self.pitch_fab = None          # pitch of input array in fab pixels
         
-        ### sectioning
-        self.labelled_regions, self.centers_pix, self.areas_pix, self.bounding_boxes_pix, self.euler_numbers = self.calculate_regions_in_slices(return_bounds=True)
+        self.areas = None              # region areas in nm
         
-        #### convert centers and areas to nm
-        self.pitch = self.calculate_index_size(output_nm=True)
-        self.centers = [center_pix * np.array(self.pitch) for center_pix in self.centers_pix]
-        self.areas = self.areas_pix * (self.pitch**2)
-
         ### initialize resistance matrix
         self.total_resistances = np.zeros_like(self.binary_array, dtype=np.float64)
         self.resistance_calculated_flag = False 
 
-        ###
+        
         self.dwell_list = []
         
-        
-        scale_factor = (3,3,1)
-        new_array = snd.zoom(self.binary_array, scale_factor)
-        plt.figure()
-        plt.imshow(new_array[:,:,10])
-        plt.figure()
-        plt.imshow(self.binary_array[:,:,10])
-        
-        
-        
-    @property
-    def shape(self):
-        shape=self.binary_array.shape
-        return shape        
-
-    def import_stl(self, filepath, pitch, scale=False):
+    def _import_stl(self, filepath, pitch, scale=False):
         """
         import stl using trimesh, then convert to a filled numpy array
         
@@ -131,7 +141,7 @@ class Structure:
         print("Slicing Completed!")
         return nummat
 
-    def import_numpy(self, filepath, binarize=True, **kwargs):
+    def _import_numpy(self, filepath, binarize=True, **kwargs):
         """
         import numpy array, then threshold (optional) to get binary matrix
         
@@ -163,26 +173,6 @@ class Structure:
             array = epsilon_array
         return array
 
-    
-    def get_coordinates(self):
-        """
-        Convert to x,y,z based on desired size and layer_height
-        """
-        ## calculate desired size per step. nm/array_pixel
-        x_step_size = self.structure_size_nm[0] / self.binary_array.shape[0]
-        y_step_size = self.structure_size_nm[1] / self.binary_array.shape[1] 
-        z_step_size = self.structure_size_nm[2] / self.binary_array.shape[2] 
-        
-        self.layer_height = z_step_size    
-        
-        array_fab_points = np.argwhere(self.binary_array)
-        
-        nm_fab_points = array_fab_points * np.array([x_step_size, y_step_size, z_step_size])
-        
-        debug("Pixel Coordinates Calculated!")
-        
-        return nm_fab_points
-
     def get_points_and_resistances(self, slice_number):
         if self.resistance_calculated_flag == False:
             self.calculate_resistance()
@@ -205,6 +195,70 @@ class Structure:
 
 
     ### Sectioning/Regions and sizing
+    
+    def set_size(self, structure_size):
+        """
+        Define structure size in nm , to calculate pixel to size conversions.
+        
+        Parameters
+        -----------
+        structure_size : float or 3-list of floats
+            If float, assumes cubic structure. List defines [x, y, z]
+        
+        """
+        
+        try:
+            if len(structure_size) == 3:
+                self.structure_size_nm = structure_size
+            else:
+                self.structure_size_nm = [structure_size, structure_size, structure_size]
+        except TypeError:
+            self.structure_size_nm = [structure_size, structure_size, structure_size]
+            
+        self.layer_height = self.structure_size_nm[2] / self.binary_array.shape[2] 
+
+    def calculate_pitch(self, output_nm=False, **kwargs):        
+        """
+        Calculate the pitch size given the size of the input and desired size of the structure. With SEM settings, can also calculate the pitch in units of fab pixels (output_nm=False)
+        
+        Parameters
+        ------------
+        
+        sem_settings : sem.SEM() object
+        
+        output_nm : bool
+            default is False. If true, outputs the pitch in nanometers. False outputs pitch in fab pixel units.
+        
+        """
+        
+        sem_settings = kwargs.get("sem")
+
+        if output_nm == False:
+            
+            if self.pix_size is None:
+                self.pix_size = sem_settings.pixel_size
+            
+            self.structure_size_fab = self.structure_size_nm[0]/self.pix_size
+            array_pitch = self.structure_size_fab / self.binary_array.shape[0]
+            
+        else:
+            array_pitch = self.structure_size_nm[0]/ self.binary_array.shape[0]
+        
+        
+        return array_pitch
+
+    def section(self):
+        if self.structure_size_nm == None:
+            print("Error! use structure.set_size() first!")
+            pass
+        else:
+            self.labelled_regions, self.centers_pix, self.areas_pix, self.bounding_boxes_pix, self.euler_numbers = self.calculate_regions_in_slices(return_bounds=True)
+    
+        
+            self.pitch_nm = self.calculate_pitch(output_nm=True)
+            self.centers = [center_pix * np.array(self.pitch_nm) for center_pix in self.centers_pix]
+            self.areas = self.areas_pix * (self.pitch_nm**2)
+    
     def calculate_regions_in_slices(self, return_bounds=False):
         """
         Returns the array with the same shape as binary_array but with nonzero elements for regions that are connected in the layer.
@@ -311,296 +365,23 @@ class Structure:
         elif return_bounds == True:
             return full_labels, centroid_list, area_array, bounds_list, euler_numbers
 
-
-    ### Sizing stuff is TBD, not sure which values are best to have.
-    def calculate_index_size(self, output_nm = False):
+    def get_coordinates(self):
         """
-        returns the actual size (in pixels) of each index unit in an array, based on the desired fabrication size
-
-
-        Parameters
-        -----------
-            binary_array :
-                array
-                
-            structure_size_nm : 
-                desired structure size (scale)
-                
-            output_nm : bool
-                if True, outputs the pitch in nanometers. Default is false, so output is in SEM pixel units (used by the stream file)
-
-        Returns
-        -----------
-            array_pitch : 
-                size of each index step in an array, in SEM pixel units. Multiply index positions by this number to get pixel coordinates
-        
+        Convert fab spots to x,y,z based on desired size
         """
-        SEM = self.SEM_settings
+        debug("Calculating Coordinates in Nanometers... ", thresh='output')
+        ## calculate desired size per step. nm/array_pixel
+        x_step_size = self.structure_size_nm[0] / self.binary_array.shape[0]
+        y_step_size = self.structure_size_nm[1] / self.binary_array.shape[1] 
+        z_step_size = self.layer_height
         
-        ##get pixel size
-        self.pix_size = SEM.pixel_size
-
-        ## convert nm structure size to pixels
-        self.structure_size = self.structure_size_nm[0]/self.pix_size
-
-        ### Right now, assume the pixels are square. This is probably something that can be fixed later though.
-        array_pitch = self.structure_size / np.max(self.binary_array.shape[:1])
+        array_fab_points = np.argwhere(self.binary_array)
         
-        if output_nm == True:
-            array_pitch = self.structure_size_nm[0]/ np.max(self.binary_array.shape[:1])
+        nm_fab_points = array_fab_points * np.array([x_step_size, y_step_size, z_step_size])
         
-        return array_pitch
-
-    def calculate_structure_size_pix(self):       
-        ## convert nm structure size to pixels
-        structure_size = self.structure_size_nm[0]/self.pix_size        
-        return structure_size
+        debug("Coordinates in Nanometers Calculated!", thresh='output')
         
-    ### Resistance calculations
-    
-    def calculate_resistance(self):
-        
-        """
-        calculate the total structure resistance. Begin with calculating the resistance of each slice, then determine whethere these add in series or parallel based on the number of regions in the adjacent slices. If the number of regions changes in adjacent layers, that implies that something has merged or separated and thus the resistance should be calculated in parallel.
-        """
-        
-        """
-        TO-DO
-        
-        Incorporate the serial summation inside of the parallel one. The parallel addition should only take place at the interfaces between regions with different euler numbers. It should NOT use the series-calculated resistances above this point, but rather begin calculating them anew, factoring in the parallel-resistance regions below.
-        
-        I imagine treating the first region simply with the series calculation, then incorporating the simple adding of the layer_resistance in the parallel function for layers != 0 (the layers not at the interface). 
-        
-        """
-        
-        ### split arrays into euler-equivalent stacks, then find the regions where the euler number changes. 
-        _, unique_region_indices = self.euler_resistance_subregions()
-        
-        # calculate isolated layer resistances
-        layer_resistances = self.calculate_layer_resistance()
-        debug("Layer resistances calculated")
-
-        for layer_number in range(layer_resistances.shape[2]):
-            layer = layer_resistances[:,:,layer_number]
-            if layer_number == 0:
-                previous_layer = np.zeros_like(layer)
-            else:
-                previous_layer = self.total_resistances[:,:, layer_number-1]
-
-            #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens it won't get the advantage of the different conduction paths. 
-            if layer_number not in unique_region_indices[1:]:
-                self.total_resistances[:,:,layer_number] = layer + (previous_layer)
-            else:
-                self.calculate_parallel_resistance(layer, layer_number)
-            
-        debug("Total resistances calculated")
-        self.resistance_calculated_flag = True
-        return self.total_resistances
-        
-    def euler_resistance_subregions(self):
-        """
-        split the array into regions with different euler numbers. In each region, the resistance should add in series. The regions then add in parallel with the ones below it.
-        """
-        layer_resistances = self.calculate_layer_resistance()
-        euler_arr = np.asarray(self.euler_numbers)
-        unique_euler_layers = np.where(euler_arr[:-1] != euler_arr[1:])[0]
-        split_arr = np.split(layer_resistances, unique_euler_layers, axis=2)
-        return split_arr, unique_euler_layers
-
-    def calculate_layer_resistance(self):
-        """
-        Calculate the resistance of each point, assuming they obey the equations for resistance of a wire. 
-
-        This will be:
-        R = rho * (Length/Area)
-        R = integral ( rho/Area) dL
-
-        The rho will be a fudge factor, but the area is calculated already and the length will come from the inter-slice proximity.
-
-        Basically, for each region, get the area and figure out if any regions are in the stack below it. If so, add the resistance at that point (going from slice to slice, the resistance is proportional to the length so it is simply additive. No reciprocal needed). connectivity and parallel resistance should come into this at some point. But alas.
-        """
-        
-        layer_resistances = np.zeros_like(self.binary_array, dtype=np.float64)
-
-        #calculate resistances for the single layer. Assume layer_height is constant.
-        resistance_constant = self.rho*self.layer_height
-        
-        ## normalize for single pixel line being 50 nm
-        normalized_areas = self.areas / (50**2)
-        
-        for layer_number in range((self.binary_array.shape[-1])):
-            ### create an array where coordinates are the resistances in the layer. np divide is to do rho*dL/Area
-            single_layer_resistance = np.divide(resistance_constant, 
-                                        normalized_areas[:,:, layer_number],
-                                        out=np.zeros_like(normalized_areas[:,:,layer_number], dtype=np.float64), where=normalized_areas[:,:,layer_number]>0)
-
-            
-            layer_resistances[:,:,layer_number] = single_layer_resistance
-
-        self._layer_resistances = layer_resistances
-        return layer_resistances
-
-    def calculate_series_resistance(self, resistances_euler_subregion):
-        """
-        calculate the thermal resistance, assuming the regions add in series. This is true if the topology does not change from layer to layer. If the number of regions changes, that indicates multiple "branches" have connected and then the parallel calculation should be done. 
-        
-        Still, the parallel calculation will involve just reciprocally adding the resistances calculated here
-        """
-        
-        layer_resistances_in_region = resistances_euler_subregion
-        summed_resistances_in_region = np.zeros_like(layer_resistances_in_region)
-        
-        ### Serial adding in each region
-        for layer in range(layer_resistances_in_region.shape[2]):
-            ## iterate through the layers in the region
-            resistance = layer_resistances_in_region[:,:,layer]
-            if layer == 0:
-                previous_resistance = np.zeros_like(layer_resistances_in_region[:,:,layer])
-            else:
-                previous_resistance = resistance
-                
-            resistance += previous_resistance    
-            
-            summed_resistances_in_region[:,:, layer] = resistance
-                        
-        return summed_resistances_in_region
-
-    def calculate_parallel_resistance(self, resistance_layer, layer_index):
-        """
-        calculate the thermal resistance, assuming the regions add in parallel. This will involve reciprocally summing the resistances of the regions that are connected in series.
-        """
-        number_of_paths = np.abs(self.euler_numbers)
-
-        previous_paths = number_of_paths[layer_index-1] # get previous Euler number
-        current_paths = number_of_paths[layer_index] # current Euler number
-        path_difference = np.abs(current_paths - previous_paths)+1 ### get the difference in paths
-
-
-        resistance = resistance_layer
-        ## add the resistances dividing by the change in Euler number to approximate the parallel thermal resistance
-        self.total_resistances[:,:, layer_index] = resistance + np.divide(path_difference,self.total_resistances[:,:,layer_index-1], out=np.zeros_like(resistance, dtype=np.float64),
-        where=self.total_resistances[:,:,layer_index-1]!=0)
-
-
-    
-    ### Dwell Calculations      
-    def calculate_prox_mat(self, layer_number):
-        coords, resists = self.get_points_and_resistances(layer_number)
-        tree = KDTree(coords)
-        distance_threshold = 3*self.sigma
-        distance_mat = tree.sparse_distance_matrix(tree, distance_threshold, output_type="coo_matrix")
-        resistance = resists[distance_mat.row]
-        prox_matrix = distance_mat.copy()
-        prox_matrix.data = self.proximity_function(distance_mat.data, resistance)
-        return prox_matrix
-
-    def solve_layer(self, proximity_matrix, dz, tol=1e-2):
-        "From F3ast"
-        upper_bound = dz / proximity_matrix.diagonal()
-        y = dz*np.ones(proximity_matrix.shape[1])
-        result = scop.lsq_linear(proximity_matrix, y, bounds=(0, upper_bound), tol=tol)
-        return result.x
-
-    def solve_all_layers(self):
-        "adapted from f3ast"
-        layer_list = []
-        debug("Calculating proximity matrices")
-        for layer_number in range(self.binary_array.shape[2]):
-            prox_mat = self.calculate_prox_mat(layer_number)
-            layer_solution = self.solve_layer(prox_mat, self.layer_height, tol=1e-3)
-            layer_list.append(layer_solution)
-        debug("Proximity matrices calculated")
-        return layer_list
-    
-    def calculate_dwells(self):
-        debug("Calculating dwell points")
-        dwell_list = []
-        layers = self.solve_all_layers()
-        for layer_number, layer in enumerate(layers):
-            coordinates_in_layer, _ = self.get_points_and_resistances(layer_number)
-            for index, point in enumerate(layer):
-                x_coordinate = coordinates_in_layer[index][0]
-                y_coordinate = coordinates_in_layer[index][1]
-                dwell = point
-                dwell_list.append([dwell, x_coordinate, y_coordinate]) 
-        self.dwell_list = dwell_list
-        print(f" Calculated {len(dwell_list)} dwell points")
-        return dwell_list
-
-
-    def proximity_function(self, distances, resistance):
-        """ from f3ast """
-        return (
-            self.growth_rate
-            * np.exp(-self.k * resistance)
-            * np.exp(-(distances**2) / (2 * self.sigma**2))
-        )
-    
-    def expand_points(stream_step_size, factor):
-        return
-
-    def prepare_stream(self, min_dwell, max_dwell):
-        debug("Preparing Stream")
-        if len(self.dwell_list) < 1:
-            self.calculate_dwells()
-            
-        SEM = self.SEM_settings
-        print(f"Structure Size: {self.structure_size}")
-        print(f"Structure Size nm : {self.structure_size_nm}")
-        structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
-        structure_yspan = [int(SEM.field_center[1] - self.structure_size/2), int(SEM.field_center[1] + self.structure_size/2)]
-        print(f"X span: {structure_xspan[1] - structure_xspan[0]}")
-        
-        step_size_x = self.structure_size/self.binary_array.shape[0]
-        step_size_y = self.structure_size/self.binary_array.shape[1]
-        
-        print(f"Step Size: {step_size_x}")
-        
-        point_xrange = range(structure_xspan[0], structure_xspan[1], int(step_size_x))
-        point_yrange = range(structure_yspan[0], structure_yspan[1], int(step_size_y))
-
-
-        points = np.nonzero(self.binary_array.astype(np.float16))
-        indices = list(map(list, zip(*points[:2])))
-        stream_list = []
-        for point_number, index_coord in enumerate(indices):
-            coord_x = point_xrange[index_coord[0]]
-            coord_y = point_yrange[index_coord[1]]
-            #print(f"X: {coord_x}, Y: {coord_y}")
-            dwell = self.dwell_list[point_number][0]/10000 #convert
-
-            if (dwell>=min_dwell) and (dwell<= max_dwell):
-                stream_line = (int(dwell), coord_x, coord_y)
-                print(stream_line)
-                stream_list.append(stream_line)
-        return stream_list
-
-
-
-        # coords_in_slice = np.asarray(indices_in_slice)
-        
-        # coordinates = coords_in_slice * np.array([x_step_size, y_step_size])
-
-
-    def output_stream(self, filename, sample_factor=1):
-        stream_list = self.prepare_stream(min_dwell=1, max_dwell=5e5)
-        numpoints = len(stream_list)
-        total_dwell = 0
-        with open(filename+'.str', 'w') as f:
-            f.write('s16\n1\n')
-            f.write(str(numpoints)+'\n')
-            for k in range(0,int(numpoints), sample_factor):
-                xstring = str(stream_list[k][1])
-                ystring = str(stream_list[k][1])
-                dwell = stream_list[k][0]
-                dwellstring = str(dwell)
-                linestring = dwellstring+" "+xstring+" "+ystring+" "
-                if k < int(numpoints)-1:
-                    f.write(linestring + '\n')
-                else:
-                    f.write(linestring + " "+"0")
-                total_dwell += dwell
-        print(total_dwell/1e7)
+        return nm_fab_points
         
 
     ### Helper Functions
@@ -646,10 +427,7 @@ if __name__ == "__main__":
 
 
     file = "branchtrio-SizedUp.stl"
+    
+    branched_trio = import_mesh(file, pitch=100)
+    
 
-
-
-    structure = Structure(file, sem_settings, pitch=100, structure_size_nm=[1000, 1000, 500])
-    print(f"structure array size: {structure.binary_array.shape}")
-    structure.output_stream("TestStreamOutput")
-   
