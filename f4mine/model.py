@@ -187,6 +187,14 @@ class ArrayModel(Model):
         where=self.total_resistances[:,:,layer_index-1]!=0)
 
 
+
+
+
+
+
+
+
+
 if __name__ == "__main__":
     import structure
     import sem

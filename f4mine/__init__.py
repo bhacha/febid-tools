@@ -1,5 +1,7 @@
-__all__ = ["structure", "sem", "structure_kernel"]
+__all__ = ["structure", "sem", "kernel", "model", "dwell"]
 
 from . import sem
 from . import structure
-from . import structure_kernel
+from . import kernel
+from . import model
+from . import dwell
