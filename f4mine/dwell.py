@@ -1,11 +1,10 @@
  ### Dwell Calculations      
 import numpy as np
 import matplotlib.pyplot as plt
-import skimage.measure as sm
-import scipy.sparse as scsp
 import scipy.optimize as scop
 from scipy.spatial import KDTree
-import skimage.transform as skt
+from importlib import import_module
+from scipy.special import expit, logit
 
 debug_mode = 'full'
 """
@@ -29,9 +28,14 @@ def debug(message, thresh='full'):
 
 class Solver:
     def __init__(self,
-                 structure):
+                 structure,
+                 calibration_parameters,
+                 ):
         
-        self.structure = structure
+        self._structure = structure
+        self.k = calibration_parameters["k"]
+        self.growth_rate = calibration_parameters["GR0"]
+        self.layer_height = structure.layer_height
         
         pass
 
@@ -40,7 +44,7 @@ class Solver:
         """
         Check if the structure has all its resistances calculated. Maybe other checks later.
         """
-        if self.structure.resistance_calculated_flag == True:
+        if self._structure.resistance_calculated_flag == True:
             pass
         else:
             ##eventually this should just do the calculation and continue.
@@ -64,30 +68,6 @@ class Solver:
         print(f" Calculated {len(dwell_list)} dwell points")
         return dwell_list
 
-    def resize_resistances(self, output_size):
-        """
-        Take the structure's resistance array and scale it up to match output_size.
-
-        Parameters
-        -----------
-
-            output_size : {float, (3,) tuple of floats} 
-                If float, resizes to a cube with edge lengths of output_size. Resizes to match tuple. 
-        
-        """
-        unscaled_res = self.structure.total_resistances
-
-        try:
-            if len(output_size) == 3:
-                output_size = output_size
-            else:
-                output_size = [output_size, output_size, output_size]
-        except TypeError:
-            output_size = [output_size, output_size, output_size]
-
-        scaled_res = skt.resize(unscaled_res, output_size, order=2, mode='constant')
-
-        return scaled_res
 
 
 class ProximityMethod(Solver):
@@ -134,14 +114,61 @@ class ProximityMethod(Solver):
             * np.exp(-(distances**2) / (2 * self.sigma**2))
         )
 
-    def expand_points(stream_step_size, factor):
-        return
+
     
 class ConvolutionMethod(Solver):
 
-    def __init__(self):
-        pass
+    def __init__(self,
+                 structure,
+                 sigma,
+                 calibration_parameters,
+                 kernel_size=15,
+                 filter='gaussian',
+                 **kwargs):
+        super().__init__(structure=structure, calibration_parameters=calibration_parameters)
 
+        self.kernel = import_module(".kernel", "f4mine")
+        self.sigma = sigma
+        self.kernel_size = kernel_size
+        self.pitch = kwargs.get("pitch", self._structure.calculate_pitch(output_nm=True))
+        self.Filter = None
+    
+        if filter == 'gaussian':
+            self.filter_type="GAUSSIAN"
+            self.gaussian()
+        elif filter== 'inverse_gaussian':
+            self.filter_type="INVGAUSS"
+            self.inverse_gaussian()
+        else:
+            print("Sorry, you can't customize a filter yet!")
+               
+    def gaussian(self):
+        layer = np.zeros_like(self._structure.total_resistances[:,:,0])
+        self.Filter = self.kernel.Gauss(self.pitch, self.sigma, layer, self.kernel_size)
+        return self.Filter
+    
+    def inverse_gaussian(self):
+        layer = np.zeros_like(self._structure.total_resistances[:,:,0])
+        self.Filter = self.kernel.InverseGauss(self.pitch, self.sigma, layer, self.kernel_size)
+        return self.Filter
+    
+    def convolution_solve(self):
+        res_3d = expit(-self.k * self._structure.total_resistances)
+        
+        convolved_3d = np.zeros_like(res_3d).astype(np.complex128)
+        
+        for layer_number in range(res_3d.shape[2]):
+            layer = res_3d[:,:,layer_number]
+            convolved_3d[:,:,layer_number] = self.kernel.apply_filter(layer, self.Filter)
+        
+        self.masked_array = self.convolution_mask(convolved_3d)
+        self.dwells = np.divide(self.layer_height, self.masked_array, where=(self.masked_array>1e-5))
+        self.solved_array = convolved_3d
+
+
+    def convolution_mask(self, solved_array):
+        masked_array = np.where(self._structure.binary_array >.5, solved_array, 0.0)
+        return masked_array
 
 if __name__ == "__main__":
 

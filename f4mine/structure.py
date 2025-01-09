@@ -1,12 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import skimage.measure as sm
-import scipy.sparse as scsp
-import scipy.optimize as scop
-from scipy.spatial import KDTree
 import trimesh as tm
 # from . import structure_kernel as stk
 import scipy.ndimage as snd
+import skimage.transform as skt
 
 debug_mode = 'full'
 """
@@ -92,7 +90,8 @@ class Structure:
             self.binary_array = self._import_stl(filepath, self.input_pitch, scale=1).astype(int)
         elif filepath.endswith(".npy"):
             self.binary_array = self._import_numpy(filepath, threshold=self.threshold, binarize=True).astype(int)
-            
+        
+        
         ### List of Properties ###
         self.structure_size_nm = None  #size in nm
         self.labelled_regions = None   # discrete, connected regions in each layer
@@ -383,6 +382,38 @@ class Structure:
         
         return nm_fab_points
         
+    def resize(self, output_size):
+        """
+        Take the structure's binary and resistance arrays and scale them up to match output_size.
+
+        Parameters
+        -----------
+
+            output_size : {float, (3,) tuple of floats} 
+                If float, resizes to a cube with edge lengths of output_size. Resizes to match tuple. 
+        
+        """
+        unscaled_res = self.total_resistances
+        unscaled_binary = self.binary_array
+        
+        try:
+            if len(output_size) == 3:
+                output_size = output_size
+            else:
+                output_size = [output_size, output_size, output_size]
+        except TypeError:
+            output_size = [output_size, output_size, output_size]
+        
+        scaled_res = skt.resize(unscaled_res, output_size, order=2, mode='constant')
+        
+        scaled_struct = skt.resize(unscaled_binary, output_size, order=1, mode='constant')
+        new_thresh = (np.max(scaled_struct)-np.min(scaled_struct)) / 2
+        scaled_binary = np.where(scaled_struct>new_thresh,1,0).astype(np.float32)
+        
+        self.binary_array = scaled_binary
+        self.layer_height = self.structure_size_nm[2] / self.binary_array.shape[2]
+        self.total_resistances = scaled_res
+        
 
     ### Helper Functions
     def plot_slice(self, view_slice, type, colorbar=True):
@@ -415,6 +446,17 @@ class Structure:
         else:
             pass
 
+    
+    def update_binary_array(self,new_array):
+        self._prev_binary_array = self.binary_array
+        self.binary_array = new_array
+        
+    
+    def update_resistance_array(self, new_array):
+        self._prev_total_resistances = self.total_resistances
+        self.total_resistances = new_array
+    
+    
 
 if __name__ == "__main__":
     from sem import * 
@@ -430,4 +472,7 @@ if __name__ == "__main__":
     
     branched_trio = import_mesh(file, pitch=100)
     
-
+    branched_trio.resize([500,500,500])
+  
+    plt.imshow(branched_trio.binary_array[:,:, 50])
+    plt.colorbar()

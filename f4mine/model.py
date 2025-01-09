@@ -41,17 +41,12 @@ class ArrayModel(Model):
     def __init__(
         self,
         structure,
-        gr,
-        k,
         sigma,
         single_pixel_width: float = 50,
         **kwargs
     ):
         super().__init__(structure, **kwargs)
-        
         self.rho = kwargs.get("rho", 1)
-        self.gr = gr
-        self.k = k
         self.sigma = sigma
         self.single_pixel_width = single_pixel_width
         
@@ -100,7 +95,10 @@ class ArrayModel(Model):
             
         debug("Total resistances calculated")
         self.resistance_calculated_flag = True
-        return self.total_resistances
+        self._struct.resistance_calculated_flag = True
+        self._struct.update_resistance_array(self.total_resistances)
+        
+        return
     
     def euler_resistance_subregions(self):
         """
@@ -214,11 +212,9 @@ if __name__ == "__main__":
     size_z = 1000 #nm
     branched_trio.set_size([size_x, size_y, size_z])
 
-    GR0 = 250 # in um/s, base growth rate
-    k = 1.5 # in 1/nm?, thermal conductivity 
     sigma = 4.4 # in nm, dwell size
 
-    mod = ArrayModel(branched_trio, gr=GR0, k=k, sigma=sigma, single_pixel_width=50, rho=1)
+    mod = ArrayModel(branched_trio, sigma=sigma, single_pixel_width=50, rho=1)
     
 
     resistances = mod.calculate_resistance()
