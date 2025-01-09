@@ -36,7 +36,8 @@ class Solver:
         self.k = calibration_parameters["k"]
         self.growth_rate = calibration_parameters["GR0"]
         self.layer_height = structure.layer_height
-        
+        self.dwell_list = []
+        self.dwells = None
         pass
 
     
@@ -53,20 +54,94 @@ class Solver:
         
 
 
-    def calculate_dwells(self):
+    def calculate_dwells(self, SEM_settings,):
+        SEM = SEM_settings
+        self.structure_size = self._structure.structure_size_nm[0]/SEM.pixel_size
+        debug(f"Structure Size: {self.structure_size}", thresh='full')
+        debug(f"Structure Size nm : {self._structure.structure_size_nm}")
+        structure_xspan = [int(SEM.field_center[0] - self.structure_size/2), int(SEM.field_center[0] + self.structure_size/2)]
+        structure_yspan = [int(SEM.field_center[1] - self.structure_size/2), int(SEM.field_center[1] + self.structure_size/2)]
+        debug(f"X span: {structure_xspan[1] - structure_xspan[0]}")
+        
+        step_size_x = self.structure_size/self._structure.binary_array.shape[0]
+        step_size_y = self.structure_size/self._structure.binary_array.shape[1]
+        
+        print(f"Step Size: {step_size_x}")
+        
+        point_xrange = range(structure_xspan[0], structure_xspan[1], int(step_size_x))
+        point_yrange = range(structure_yspan[0], structure_yspan[1], int(step_size_y))
+
         debug("Calculating dwell points")
-        dwell_list = []
-        layers = self.solve_all_layers()
-        for layer_number, layer in enumerate(layers):
-            coordinates_in_layer, _ = self.get_points_and_resistances(layer_number)
-            for index, point in enumerate(layer):
-                x_coordinate = coordinates_in_layer[index][0]
-                y_coordinate = coordinates_in_layer[index][1]
-                dwell = point
-                dwell_list.append([dwell, x_coordinate, y_coordinate]) 
-        self.dwell_list = dwell_list
-        print(f" Calculated {len(dwell_list)} dwell points")
-        return dwell_list
+        fablist = []
+        coord_list = []
+        max_layer = self.dwells.shape[2]
+        dwell_output = []
+        for layer in range(max_layer):
+            fab_indices = np.argwhere(self.dwells[:,:,layer])
+            
+            for [x, y] in fab_indices:
+                dwell_time = self.dwells[x, y, layer]
+                if dwell_time <= 3e10:
+                    xpos = point_xrange[x]
+                    ypos = point_yrange[y]
+                    coordinate = [xpos, ypos]
+                    coord_list.append(coordinate)
+                    dwell_output.append(dwell_time)
+                    fablist.append([dwell_time, xpos,ypos])
+                else:
+                    pass
+            
+        self.dwell_list = dwell_output
+        self._structure.dwell_list = self.dwell_list
+        self.fablist = fablist
+        print(f" Calculated {len(dwell_output)} dwell points")
+        return fablist
+    
+    
+
+    def prepare_stream(self, SEM_settings, min_dwell=100, max_dwell=8e5):
+        debug("Preparing Stream")
+
+        if len(self.dwell_list) < 5:
+            fablist = self.calculate_dwells(SEM_settings)
+        else:
+            fablist = self.fablist
+
+        stream_list = []
+        for spot in range(len(fablist)):
+            coord_x = int(fablist[spot][1]) 
+            coord_y = int(fablist[spot][2])
+            #print(f"X: {coord_x}, Y: {coord_y}")
+            dwell = int(fablist[spot][0])
+
+            if (dwell>=min_dwell) and (dwell<= max_dwell):
+                stream_line = (int(dwell), coord_x, coord_y)
+                stream_list.append(stream_line)
+
+        self.stream_list = stream_list       
+        return stream_list
+
+
+    def output_stream(self, filename, SEM_settings, sample_factor=1, min_dwell=500, max_dwell=5e5):
+        stream_list = self.prepare_stream(SEM_settings, min_dwell=min_dwell, max_dwell=max_dwell)
+        numpoints = len(stream_list)
+        total_dwell = 0
+        with open(filename+'.str', 'w') as f:
+            f.write('s16\n1\n')
+            f.write(str(numpoints)+'\n')
+            for k in range(0,int(numpoints), sample_factor):
+                xstring = str(stream_list[k][1])
+                ystring = str(stream_list[k][2])
+                dwell = stream_list[k][0]
+                dwellstring = str(dwell)
+                linestring = dwellstring+" "+xstring+" "+ystring+" "
+                if k < int(numpoints)-1:
+                    f.write(linestring + '\n')
+                else:
+                    f.write(linestring + " "+"0")
+                total_dwell += dwell
+        print(total_dwell/1e7)
+
 
 
 
@@ -161,9 +236,17 @@ class ConvolutionMethod(Solver):
             layer = res_3d[:,:,layer_number]
             convolved_3d[:,:,layer_number] = self.kernel.apply_filter(layer, self.Filter)
         
-        self.masked_array = self.convolution_mask(convolved_3d)
+        self.masked_array = self.convolution_mask(convolved_3d).real
         self.dwells = np.divide(self.layer_height, self.masked_array, where=(self.masked_array>1e-5))
         self.solved_array = convolved_3d
+
+    def solve_all_layers(self):
+        layers = []
+        for k in range(self.dwells.shape[2]):
+            layer = self.dwells[:,:,k].flatten().tolist()
+            layers.append(layer)
+        
+        return layers
 
 
     def convolution_mask(self, solved_array):

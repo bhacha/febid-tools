@@ -86,12 +86,12 @@ class ArrayModel(Model):
                 previous_layer = self.total_resistances[:,:, layer_number-1]
             
             
-            
-            #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens it won't get the advantage of the different conduction paths. 
-            if layer_number not in unique_region_indices[1:]:
-                np.add(layer, previous_layer, where=np.where(layer != 0, True, False), out = self.total_resistances[:,:,layer_number])
-            else:
-                self.calculate_parallel_resistance(layer, layer_number)
+            np.add(layer, previous_layer, where=np.where(layer != 0, True, False), out = self.total_resistances[:,:,layer_number])
+            # #we actually don't need to do parallel stuff for the first region with a different euler number, since it's the first part where branching happens it won't get the advantage of the different conduction paths. 
+            # if layer_number not in unique_region_indices[1:]:
+            #     np.add(layer, previous_layer, where=np.where(layer != 0, True, False), out = self.total_resistances[:,:,layer_number])
+            # else:
+            #     self.calculate_parallel_resistance(layer, layer_number)
             
         debug("Total resistances calculated")
         self.resistance_calculated_flag = True
